@@ -1,0 +1,17 @@
+[package]
+name = "spc-spectra"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Reader for SPC spectroscopy files (Thermo Galactic / GRAMS format) used by FT-IR, Raman, NIR and UV-VIS instruments"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/bsenkel/spc-spectra"
+keywords = ["spc", "spectroscopy", "nir", "raman", "ftir"]
+categories = ["science", "parser-implementations", "encoding"]
+exclude = ["tests/data/*"]
+
+[dependencies]
+
+[lints.rust]
+missing_docs = "warn"
