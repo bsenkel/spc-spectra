@@ -1,5 +1,9 @@
 # spc-spectra
 
+[![Crates.io](https://img.shields.io/crates/v/spc-spectra.svg)](https://crates.io/crates/spc-spectra)
+[![docs.rs](https://img.shields.io/docsrs/spc-spectra)](https://docs.rs/spc-spectra)
+[![License](https://img.shields.io/crates/l/spc-spectra.svg)](LICENSE-MIT)
+
 A Rust reader for **SPC spectroscopy files** — the binary format introduced by
 Galactic Industries and carried on in Thermo's GRAMS software. It is still the
 everyday interchange format for FT-IR, Raman, NIR, UV-VIS, NMR and MS data.
