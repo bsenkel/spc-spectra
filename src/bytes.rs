@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn text_stops_at_the_first_null() {
-        assert_eq!(decode_text(b"SentroNIR\0\0\0"), "SentroNIR");
+        assert_eq!(decode_text(b"NIR probe\0\0\0"), "NIR probe");
         assert_eq!(decode_text(b"  padded  "), "padded");
         assert_eq!(decode_text(b""), "");
         // Invalid UTF-8 is replaced rather than rejected.

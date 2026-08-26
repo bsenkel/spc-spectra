@@ -1,4 +1,4 @@
-//! Every format variant that version 0.1 cannot decode must be refused with a
+//! Every format variant this version cannot decode must be refused with a
 //! specific reason. These tests are the guarantee that the crate never returns
 //! a plausible-looking but wrong spectrum.
 

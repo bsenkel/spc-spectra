@@ -1,12 +1,12 @@
-//! Error types returned when reading an SPC file.
+//! Error types returned when reading or writing an SPC file.
 
 use std::fmt;
 
-/// Anything that can go wrong while reading an SPC file.
+/// Anything that can go wrong while reading or writing an SPC file.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum SpcError {
-    /// The file could not be opened or read.
+    /// The file could not be opened, read or written.
     Io(std::io::Error),
 
     /// The data ended before a structure could be read completely.
@@ -64,6 +64,43 @@ pub enum SpcError {
     MalformedHeader {
         /// Which field was wrong, and what it held.
         detail: &'static str,
+    },
+
+    /// A text field holds more bytes than its fixed-width slot in the file.
+    ///
+    /// Truncating instead would put a silently shortened comment or instrument
+    /// name into the file. A value that fills the slot exactly is fine: the
+    /// field's width ends it, no terminating null required.
+    FieldTooLong {
+        /// Name of the header field, as the format documentation spells it.
+        field: &'static str,
+        /// Number of bytes the field can hold.
+        max: usize,
+        /// Number of bytes the value actually needs.
+        len: usize,
+    },
+
+    /// The `Spc` in hand describes something this version cannot serialise.
+    ///
+    /// Unlike [`Self::Unsupported`], which is about a file that was read, this
+    /// is about a value that would have been written: more than one subfile, an
+    /// empty spectrum, a point count that disagrees with the y values, or an x
+    /// axis that is not the evenly spaced one the format implies.
+    NotWritable {
+        /// What made it unwritable.
+        detail: &'static str,
+    },
+
+    /// A finite y value that does not survive the narrowing to `f32`.
+    ///
+    /// The format stores y values as 32 bit floats, so some precision is always
+    /// lost. A finite number that turns into an infinity is a different matter:
+    /// the value written would not be the value handed over.
+    ValueNotRepresentable {
+        /// Index of the offending point.
+        index: usize,
+        /// The value that has no `f32` equivalent.
+        value: f64,
     },
 }
 
@@ -142,7 +179,7 @@ impl fmt::Display for Unsupported {
 impl fmt::Display for SpcError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(e) => write!(f, "could not read the file: {e}"),
+            Self::Io(e) => write!(f, "could not read or write the file: {e}"),
             Self::TooShort {
                 context,
                 needed,
@@ -167,6 +204,15 @@ impl fmt::Display for SpcError {
                  but the log block starts at {log_offset}"
             ),
             Self::MalformedHeader { detail } => write!(f, "malformed header: {detail}"),
+            Self::FieldTooLong { field, max, len } => write!(
+                f,
+                "{field} is {len} bytes long, but the field holds only {max}"
+            ),
+            Self::NotWritable { detail } => write!(f, "cannot be written: {detail}"),
+            Self::ValueNotRepresentable { index, value } => write!(
+                f,
+                "y value {value} at index {index} is finite but has no 32-bit float equivalent"
+            ),
         }
     }
 }

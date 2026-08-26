@@ -55,15 +55,18 @@ fn paper_absorbance() {
         .y(y)
         .range(FIRST_NM, LAST_NM)
         .axis_types(3, 2) // nanometers / absorbance
-        .source("SentroNIR")
+        .source("NIR probe")
         .comment("SYNTHETIC cellulose-shaped spectrum - not a measurement")
         .date(2026, 7, 21, 15, 4)
+        // The scan count belongs in subscan, the field the format has for it —
+        // not in the log text, where only software sharing the key=value
+        // convention would ever find it.
+        .subscan(32)
         .log_text(
             "Sample=paper, synthetic\n\
              Origin=generated from published band positions\n\
              Channel=1\n\
              Integration=100ms\n\
-             Averages=32\n\
              Reference=internal white\n",
         )
         .build();
@@ -85,9 +88,10 @@ fn paper_transmittance() {
         .y(y)
         .range(FIRST_NM, LAST_NM)
         .axis_types(3, 128) // nanometers / transmission
-        .source("SentroNIR")
+        .source("NIR probe")
         .comment("SYNTHETIC cellulose-shaped spectrum - not a measurement")
         .date(2026, 7, 21, 15, 4)
+        .subscan(32) // the same acquisition, expressed differently
         .log_text("Sample=paper, synthetic\nUnit=percent transmittance\nChannel=1\n")
         .build();
     write("spc-paper-transmittance.spc", spc);

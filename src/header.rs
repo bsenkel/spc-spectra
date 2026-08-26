@@ -2,6 +2,7 @@
 
 use crate::bytes::Cursor;
 use crate::error::{SpcError, Unsupported};
+use crate::write::Sink;
 use std::fmt;
 
 /// Version byte of the new format with little-endian numbers.
@@ -365,6 +366,13 @@ impl Header {
     /// Size of the main header in bytes.
     pub const SIZE: usize = 512;
 
+    /// The header's fixed-width text fields: name, and width in bytes.
+    ///
+    /// Stated once so that reading, writing and validating cannot drift apart.
+    /// A value may fill its field completely; the width is what ends it.
+    const TEXT_FIELDS: [(&'static str, usize); 4] =
+        [("fres", 9), ("fsource", 9), ("fcmnt", 130), ("fmethod", 48)];
+
     /// Reads the header from the current cursor position.
     pub(crate) fn parse(c: &mut Cursor<'_>) -> Result<Self, SpcError> {
         const CTX: &str = "the main header";
@@ -447,6 +455,55 @@ impl Header {
         })
     }
 
+    /// Writes the header back out, mirroring [`Self::parse`] field for field.
+    ///
+    /// `flogoff` is passed in rather than taken from the struct: it is a byte
+    /// offset into the file being built, so only the writer knows it, and a
+    /// stale value would point the log block into the middle of the spectrum.
+    ///
+    /// Everything after `fwtype` is the format's reserved tail and is written
+    /// as nulls. A header that came from another program may have had something
+    /// in there; this crate does not model it, so it cannot preserve it.
+    pub(crate) fn write(&self, s: &mut Sink, flogoff: u32) -> Result<(), SpcError> {
+        let start = s.pos();
+
+        s.u8(self.ftflgs.0);
+        s.u8(self.fversn);
+        s.u8(self.fexper.code());
+        s.i8(self.fexp);
+        s.u32(self.fnpts);
+        s.f64(self.ffirst);
+        s.f64(self.flast);
+        s.u32(self.fnsub);
+        s.u8(self.fxtype.code());
+        s.u8(self.fytype.code());
+        s.u8(self.fztype.code());
+        s.u8(self.fpost);
+        s.u32(self.fdate);
+        s.text(&self.fres, Self::TEXT_FIELDS[0].1, "fres")?;
+        s.text(&self.fsource, Self::TEXT_FIELDS[1].1, "fsource")?;
+        s.u16(self.fpeakpt);
+        for v in self.fspare {
+            s.f32(v);
+        }
+        s.text(&self.fcmnt, Self::TEXT_FIELDS[2].1, "fcmnt")?;
+        s.bytes(&self.fcatxt);
+        s.u32(flogoff);
+        s.u32(self.fmods);
+        s.u8(self.fprocs);
+        s.u8(self.flevel);
+        s.u16(self.fsampin);
+        s.f32(self.ffactor);
+        s.text(&self.fmethod, Self::TEXT_FIELDS[3].1, "fmethod")?;
+        s.f32(self.fzinc);
+        s.u32(self.fwplanes);
+        s.f32(self.fwinc);
+        s.u8(self.fwtype.code());
+
+        s.pad_to(start + Self::SIZE);
+        Ok(())
+    }
+
     /// Rejects every file variant this version cannot decode correctly.
     ///
     /// Each rejection is a distinct [`Unsupported`] value, so callers can tell
@@ -501,6 +558,28 @@ impl Header {
             return Err(SpcError::MalformedHeader {
                 detail: "flast is not a finite number",
             });
+        }
+        Ok(())
+    }
+
+    /// Checks that every text field still fits the slot it came from.
+    ///
+    /// Called before writing, so that an over-long comment is reported where it
+    /// was set rather than halfway through building the file. A value read from
+    /// a file normally fits by construction — with one exception worth knowing
+    /// about: text that was not valid UTF-8 is decoded lossily, and each
+    /// replaced byte becomes a three byte `U+FFFD`. Such a field can grow past
+    /// its slot, and then the file can be read but not written back.
+    pub(crate) fn validate_text_fields(&self) -> Result<(), SpcError> {
+        let values = [&self.fres, &self.fsource, &self.fcmnt, &self.fmethod];
+        for (&(field, max), value) in Self::TEXT_FIELDS.iter().zip(values) {
+            if value.len() > max {
+                return Err(SpcError::FieldTooLong {
+                    field,
+                    max,
+                    len: value.len(),
+                });
+            }
         }
         Ok(())
     }

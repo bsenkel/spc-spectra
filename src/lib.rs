@@ -1,6 +1,7 @@
-//! Reader for SPC spectroscopy files, the binary format introduced by Galactic
-//! Industries and later carried on in Thermo's GRAMS software. It is still the
-//! everyday interchange format for FT-IR, Raman, NIR, UV-VIS, NMR and MS data.
+//! Reader and writer for SPC spectroscopy files, the binary format introduced
+//! by Galactic Industries and later carried on in Thermo's GRAMS software. It
+//! is still the everyday interchange format for FT-IR, Raman, NIR, UV-VIS, NMR
+//! and MS data.
 //!
 //! ```no_run
 //! use spc_spectra::Spc;
@@ -17,9 +18,44 @@
 //! # Ok::<(), spc_spectra::SpcError>(())
 //! ```
 //!
-//! # What this version reads
+//! # Writing
 //!
-//! Version 0.1 deliberately covers only the most common variant, which is what
+//! [`SpcBuilder`] turns a spectrum into a file, and [`Spc::to_bytes`] or
+//! [`Spc::to_path`] serialises one that was read or built:
+//!
+//! ```no_run
+//! use spc_spectra::{SpcBuilder, Technique, XType, YType};
+//!
+//! let y: Vec<f64> = (0..801).map(|i| 0.1 + f64::from(i) * 0.001).collect();
+//!
+//! SpcBuilder::new(900.0, 1700.0, y)
+//!     .x_type(XType::Nanometers)
+//!     .y_type(YType::Absorbance)
+//!     .technique(Technique::Nir)
+//!     .source("NIR probe")
+//!     .log_text("Channel=1\nIntegration=100ms")
+//!     .build()?
+//!     .to_path("spectrum.spc")?;
+//! # Ok::<(), spc_spectra::SpcError>(())
+//! ```
+//!
+//! Reading and writing cover exactly the same ground, and deliberately so: the
+//! writer runs the reader's own validation before it writes a byte, so a file
+//! this crate produces is always one it can read back. The x axis is not stored
+//! in the format — it is regenerated from the two end points — which is why the
+//! builder takes a range rather than x values.
+//!
+//! Every field this crate parses survives a read/write round trip, and a file
+//! it wrote is byte-stable. Byte-for-byte fidelity to a *foreign* file is not
+//! promised, because the reader does not model everything a file may hold: the
+//! reserved tails of the header and subheader and the log block's `logdsks`
+//! area are written as nulls, log entries separated by nulls come back
+//! separated by newlines, and trailing whitespace in the log text is trimmed.
+//! See [`Spc::to_bytes`] for the full list.
+//!
+//! # What this version reads and writes
+//!
+//! Version 0.2 deliberately covers only the most common variant, which is what
 //! a typical single-spectrum export from a modern instrument looks like:
 //!
 //! | Aspect | Supported |
@@ -31,7 +67,8 @@
 //! | Log block | yes, passed through raw |
 //!
 //! Everything else is rejected with a specific [`Unsupported`] value rather
-//! than parsed on a guess: big-endian files (`0x4C`), the old format (`0x4D`),
+//! than parsed on a guess — and, since the writer runs the same checks, rather
+//! than written on a guess either: big-endian files (`0x4C`), the old format (`0x4D`),
 //! multifile records, `TXYXYS`, explicit x values (`TXVALS`), 16-bit y values
 //! (`TSPREC`), multi-plane data cubes (`fwplanes > 1`) and Galactic fixed-point
 //! y values — including the case where the subheader's own `subexp` contradicts
@@ -62,6 +99,13 @@
 //! Each of these was, at some point during development, a way to get silently
 //! wrong numbers out of a file that parsed without complaint.
 //!
+//! Writing applies it in the other direction, refusing to put a contradiction
+//! into a file rather than to take one out of it: a point count that disagrees
+//! with the y values, an x axis that is not the evenly spaced one the end
+//! points describe (writing it would substitute that axis silently), a text
+//! field longer than its fixed-width slot, and a finite y value with no 32 bit
+//! float equivalent.
+//!
 //! # Handling the unsupported cases
 //!
 //! ```
@@ -83,13 +127,16 @@
 
 #![forbid(unsafe_code)]
 
+mod builder;
 mod bytes;
 mod error;
 mod header;
 mod log;
 mod spc;
 mod subheader;
+mod write;
 
+pub use builder::SpcBuilder;
 pub use error::{SpcError, Unsupported};
 pub use header::{
     FEXP_IEEE_FLOAT, Header, SpcDate, TFlags, Technique, VERSION_NEW_BE, VERSION_NEW_LE,

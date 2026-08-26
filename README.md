@@ -4,23 +4,25 @@
 [![docs.rs](https://img.shields.io/docsrs/spc-spectra)](https://docs.rs/spc-spectra)
 [![License](https://img.shields.io/crates/l/spc-spectra.svg)](LICENSE-MIT)
 
-A Rust reader for **SPC spectroscopy files** — the binary format introduced by
-Galactic Industries and carried on in Thermo's GRAMS software. It is still the
-everyday interchange format for FT-IR, Raman, NIR, UV-VIS, NMR and MS data.
+A Rust reader and writer for **SPC spectroscopy files** — the binary format
+introduced by Galactic Industries and carried on in Thermo's GRAMS software. It
+is still the everyday interchange format for FT-IR, Raman, NIR, UV-VIS, NMR and
+MS data.
 
-Readers for this format exist in Python, R and Julia. This crate fills the gap
-in Rust.
+Readers for this format exist in Python, R, JavaScript and Julia. This crate
+fills the gap in Rust.
 
 - **No dependencies.** Standard library only.
 - **No `unsafe`.** Enforced with `#![forbid(unsafe_code)]`.
 - **Refuses rather than guesses.** Format variants that are not decoded yet are
-  reported as a specific error, never parsed on a hunch. The same applies to a
+  reported as a specific error, never parsed on a hunch — and never written on
+  one either, since the writer runs the reader's checks. The same applies to a
   file that contradicts itself: where the format states an invariant, it is
   checked rather than assumed.
 
 ```toml
 [dependencies]
-spc-spectra = "0.1"
+spc-spectra = "0.2"
 ```
 
 ## Usage
@@ -47,13 +49,55 @@ if let Some(log) = &spc.log {
 # Ok::<(), spc_spectra::SpcError>(())
 ```
 
-There is also a command-line dump for inspecting a file:
+## Writing
 
-```sh
-cargo run --example dump -- spectrum.spc
+`SpcBuilder` turns a spectrum into a file; `to_path()` and `to_bytes()` write a
+file that was read or built.
+
+```rust
+use spc_spectra::{SpcBuilder, Technique, XType, YType};
+
+let y: Vec<f64> = vec![/* your measurement */];
+
+SpcBuilder::new(900.0, 1700.0, y)   // first x, last x, the data
+    .x_type(XType::Nanometers)
+    .y_type(YType::Absorbance)
+    .technique(Technique::Nir)
+    .source("NIR probe")
+    .scans(32)                      // the format has a field for this
+    .log_text("Channel=1\nIntegration=100ms")
+    .build()?
+    .to_path("spectrum.spc")?;
+# Ok::<(), spc_spectra::SpcError>(())
 ```
 
-## What version 0.1 reads
+The x axis is not stored in an SPC file — every reader regenerates it from the
+two end points — which is why the builder takes a range rather than x values.
+
+Reading and writing cover exactly the same ground, on purpose: **the writer runs
+the reader's own validation before it writes a byte**, so a file this crate
+produces is always one it can read back, and a variant it refuses to read is one
+it refuses to write.
+
+Every parsed field survives a round trip, and a file this crate wrote is
+byte-stable. Byte-for-byte fidelity to a *foreign* file is not promised, because
+the reader does not model everything a file may hold:
+
+- the reserved tails of the header and subheader, and the log block's `logdsks`
+  area, are written as nulls;
+- log entries separated by nulls come back separated by newlines, and trailing
+  whitespace in the log text is trimmed;
+- text that was not valid UTF-8 is decoded lossily, and a field that grows past
+  its slot that way is reported rather than truncated.
+
+Two command-line examples, which are also the round trip in the small:
+
+```sh
+cargo run --example write -- spectrum.spc   # write a synthetic spectrum
+cargo run --example dump  -- spectrum.spc   # read it back
+```
+
+## What version 0.2 reads and writes
 
 | Aspect | Supported |
 | --- | --- |
@@ -63,12 +107,13 @@ cargo run --example dump -- spectrum.spc
 | y values | IEEE floats (`fexp = 0x80`) |
 | Log block | yes, raw binary and text |
 | Bit-packed date (`fdate`) | yes |
-| `subnpts = 0` shorthand | yes |
+| `subnpts = 0` shorthand | yes, and kept as the shorthand when written |
 
 ### Not yet supported
 
-Each of these is rejected with its own `Unsupported` variant, so you always
-learn exactly which feature a file needs:
+Each of these is rejected with its own `Unsupported` variant — on reading and,
+by the same check, on writing — so you always learn exactly which feature a file
+needs:
 
 | Variant | Error |
 | --- | --- |
@@ -90,10 +135,10 @@ sample files to validate against.
 
 ## Roadmap
 
-- **Writing.** `Spc::to_bytes()` / `Spc::to_path()` to serialize a `Spc` back
-  to a valid `.spc` file, mirroring `from_bytes()`/`from_path()`. Not started
-  yet; would begin with the same scope as the current reader (single
-  subfile, IEEE float y values) before widening.
+Widening the supported set, in the order the table above lists it: multifile
+records (`TMULTI`) and explicit x values (`TXVALS`) are the two that come up
+most in practice. Each needs a real-world sample file to validate against —
+see above.
 
 ## Testing
 
@@ -104,7 +149,7 @@ The test suite builds SPC files byte by byte in memory
 cargo test
 ```
 
-Three suites, with different jobs:
+Six suites, with different jobs:
 
 - `roundtrip.rs` — parses a known-good file and checks every field matches.
 - `unsupported.rs` — each refused variant is refused for the *right* stated
@@ -112,7 +157,21 @@ Three suites, with different jobs:
 - `robustness.rs` — the parser never panics. Exhaustive single-bit flips
   through the header and subheader, 100 000 random mutations, arbitrary
   garbage, and every plausible `flogoff`. Deterministic, so a failure is
-  reproducible.
+  reproducible. It also holds the two properties the writer rests on: whatever
+  the reader accepts, however mangled, must be writable and parse back the
+  same; and whatever `SpcBuilder` can express — 2 000 generated spectra, point
+  counts from 1 to 1 000, magnitudes from `1e-15` to `1e14`, text fields up to
+  their exact limit — must survive a round trip unchanged.
+- `write.rs` — a parsed file, written back, must be **byte-identical** to the
+  hand-assembled fixture. Checking the writer against the reader alone would
+  pass happily if both shared a mistake about the layout. Run over three dozen
+  named shapes — point counts, axis directions, log block combinations, text
+  fields at their limits — because most layout mistakes survive any single
+  geometry.
+- `write_refuses.rs` — the writing counterpart to `unsupported.rs`: every way a
+  file can fail to be written, refused for the right stated reason.
+- `build.rs` — `SpcBuilder`, checked the same way: a file built from a spectrum
+  and its metadata must come out byte-identical to the fixture.
 
 ## Related work
 
@@ -136,7 +195,7 @@ additional terms or conditions.
 This project is **not affiliated with, endorsed by, or sponsored by Thermo
 Fisher Scientific**. "Thermo", "Galactic" and "GRAMS" are trademarks of their
 respective owners and are used here only descriptively, to say which files this
-crate reads.
+crate reads and writes.
 
 The format specification document is copyrighted and is neither included in nor
 distributed with this repository. This implementation describes the format's

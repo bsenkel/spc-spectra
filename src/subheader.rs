@@ -3,6 +3,7 @@
 use crate::bytes::Cursor;
 use crate::error::{SpcError, Unsupported};
 use crate::header::{FEXP_IEEE_FLOAT, Header};
+use crate::write::Sink;
 
 /// Flags from the `subflgs` byte of a subheader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -80,13 +81,34 @@ impl SubHeader {
         })
     }
 
+    /// Writes the subheader back out, mirroring [`Self::parse`] field for field.
+    ///
+    /// `subnpts` is written as it stands, so a file that used the
+    /// "inherit from `fnpts`" shorthand keeps it. The caller has already
+    /// checked that the two agree with the number of y values.
+    pub(crate) fn write(&self, s: &mut Sink) {
+        let start = s.pos();
+
+        s.u8(self.subflgs.0);
+        s.i8(self.subexp);
+        s.u16(self.subindx);
+        s.f32(self.subtime);
+        s.f32(self.subnext);
+        s.f32(self.subnois);
+        s.u32(self.subnpts);
+        s.u32(self.subscan);
+        s.f32(self.subwlevel);
+
+        s.pad_to(start + Self::SIZE);
+    }
+
     /// Rejects a subfile whose own exponent contradicts the file-wide one.
     ///
     /// `subexp` may legitimately repeat `fexp`, or be `0x80` to mean "IEEE
     /// floats regardless". Anything else says this subfile is encoded
-    /// differently from what the main header advertises — and since version 0.1
-    /// only decodes floats, carrying on would produce a spectrum that looks
-    /// entirely plausible and is entirely wrong.
+    /// differently from what the main header advertises — and since this
+    /// version handles only IEEE floats, carrying on would produce a spectrum
+    /// that looks entirely plausible and is entirely wrong.
     ///
     /// This is strict on purpose. A `subexp` of `0` is a valid fixed-point
     /// exponent, not an obvious "field not filled in" marker, so it is refused

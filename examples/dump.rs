@@ -37,6 +37,7 @@ fn main() -> std::process::ExitCode {
     println!("Comment       {}", show(&h.fcmnt));
     println!("Flags         {:#010b}", h.ftflgs.0);
     println!("Points        {}", spc.y().len());
+    println!("Scans         {}", spc.subfiles[0].subheader.subscan);
     println!(
         "x axis        {} .. {}  [{}]",
         h.ffirst,

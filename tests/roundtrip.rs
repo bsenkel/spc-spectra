@@ -45,7 +45,7 @@ fn reads_every_header_field_back() {
     assert_eq!(h.fxtype, XType::Nanometers);
     assert_eq!(h.fytype, YType::Absorbance);
     assert_eq!(h.fres, "2nm");
-    assert_eq!(h.fsource, "SentroNIR");
+    assert_eq!(h.fsource, "NIR probe");
     assert_eq!(h.fcmnt, "synthetic test spectrum");
     assert_eq!(h.ffactor, 1.0);
 }
@@ -164,7 +164,8 @@ fn a_log_block_using_nulls_as_separators_keeps_every_entry() {
 
 #[test]
 fn the_log_block_text_comes_through_and_splits_into_pairs() {
-    let spc = parse(&SpcBuilder::new().log_text("Channel=1\nIntegration=100ms\nOperator=B S\n"));
+    let spc =
+        parse(&SpcBuilder::new().log_text("Channel=1\nIntegration=100ms\nOperator=day shift\n"));
     let log = spc.log.expect("the default builder writes a log block");
 
     assert!(log.text.contains("Integration=100ms"));
@@ -175,7 +176,7 @@ fn the_log_block_text_comes_through_and_splits_into_pairs() {
         vec![
             ("Channel", "1"),
             ("Integration", "100ms"),
-            ("Operator", "B S")
+            ("Operator", "day shift")
         ]
     );
     assert_eq!(log.get("channel"), Some("1"), "lookup ignores case");

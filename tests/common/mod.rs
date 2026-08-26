@@ -1,14 +1,54 @@
 //! Builds synthetic SPC files in memory so the parser can be tested without
 //! shipping any third-party sample data.
 //!
-//! The defaults mirror a real single-spectrum NIR export: 801 points from
-//! 900 to 1700 nm, one subfile with `subnpts = 0`, IEEE float y values and a
-//! log block of plain `key=value` lines. That puts the log block at byte
-//! 512 + 32 + 801 * 4 = 3748, the same geometry a real instrument produces.
+//! The defaults are shaped like a typical single-spectrum NIR export: 801
+//! points from 900 to 1700 nm — the usual InGaAs range at a 1 nm step — one
+//! subfile with `subnpts = 0`, IEEE float y values and a log block of plain
+//! `key=value` lines. That puts the log block at byte 512 + 32 + 801 * 4 =
+//! 3748, the geometry an export of that size has.
 
 #![allow(dead_code)] // Not every test uses every knob.
 
 use spc_spectra::{Header, SpcDate, SubHeader, TFlags};
+
+/// xorshift64. Deterministic on purpose: a fuzz failure you cannot reproduce
+/// is a rumour, not a bug report. No `rand` dependency either — this crate has
+/// none and the test suite should not smuggle one in.
+pub struct Rng(u64);
+
+impl Default for Rng {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Rng {
+    pub fn new() -> Self {
+        Self(0x2545_F491_4F6C_DD1D)
+    }
+
+    pub fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    /// A number in `0..n`.
+    pub fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    /// True with probability `1 / n`.
+    pub fn one_in(&mut self, n: usize) -> bool {
+        self.below(n) == 0
+    }
+
+    /// A fraction in `0.0 ..= 1.0`.
+    pub fn fraction(&mut self) -> f64 {
+        self.next() as f64 / u64::MAX as f64
+    }
+}
 
 pub const DEFAULT_NPTS: u32 = 801;
 pub const DEFAULT_FIRST: f64 = 900.0;
@@ -33,6 +73,7 @@ pub struct SpcBuilder {
     fcmnt: String,
     fcatxt: Vec<u8>,
     subnpts: u32,
+    subscan: u32,
     /// Written into the subheader; defaults to whatever `fexp` is.
     subexp: Option<i8>,
     y: Vec<f32>,
@@ -71,10 +112,11 @@ impl SpcBuilder {
             }
             .to_packed(),
             fres: "2nm".into(),
-            fsource: "SentroNIR".into(),
+            fsource: "NIR probe".into(),
             fcmnt: "synthetic test spectrum".into(),
             fcatxt: Vec::new(),
             subnpts: 0, // inherit fnpts
+            subscan: 1,
             subexp: None,
             y,
             log_text: Some("Channel=1\nIntegration=100ms\n".into()),
@@ -177,6 +219,12 @@ impl SpcBuilder {
         self
     }
 
+    /// Number of co-added scans, written into the subheader.
+    pub fn subscan(mut self, v: u32) -> Self {
+        self.subscan = v;
+        self
+    }
+
     /// Sets the subheader's own exponent independently of the header's `fexp`.
     ///
     /// Without this the two always agree, which is exactly the case that hides
@@ -268,7 +316,7 @@ impl SpcBuilder {
         out.extend_from_slice(&0.0f32.to_le_bytes()); // subnext
         out.extend_from_slice(&0.0f32.to_le_bytes()); // subnois
         out.extend_from_slice(&self.subnpts.to_le_bytes());
-        out.extend_from_slice(&1u32.to_le_bytes()); // subscan
+        out.extend_from_slice(&self.subscan.to_le_bytes());
         out.extend_from_slice(&0.0f32.to_le_bytes()); // subwlevel
         out.resize(sub_start + SubHeader::SIZE, 0);
 
