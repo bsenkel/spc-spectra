@@ -106,6 +106,36 @@ fn byte_comparison_cases() -> Vec<(&'static str, RawSpc)> {
             "log long text",
             reference().log_text("key=value\n".repeat(200).trim_end()),
         ),
+        // How instruments store the block: reserved in whole allocation
+        // units, the remainder padded with nulls, `logsizm` describing the
+        // reservation rather than the text.
+        (
+            "log padded to 4096",
+            reference().log_sizm(4096).log_pad_to(4096),
+        ),
+        (
+            "log padded, odd total",
+            reference().log_sizm(999).log_pad_to(999),
+        ),
+        (
+            "log padded by one byte",
+            reference().log_sizm(97).log_pad_to(97),
+        ),
+        (
+            "log padded with binary area",
+            reference()
+                .log_binary(vec![0xDE, 0xAD, 0xBE, 0xEF])
+                .log_sizm(512)
+                .log_pad_to(512),
+        ),
+        // logsizm larger than the block is: nothing to pad, but the field
+        // still has to come back as it was.
+        ("logsizm without padding", reference().log_sizm(4096)),
+        ("logdsks not zero", reference().log_dsks(0x2A)),
+        (
+            "logsizm and logdsks together",
+            reference().log_sizm(4096).log_dsks(7).log_pad_to(4096),
+        ),
         // Custom axis labels: the 30 byte field, filled to different depths.
         (
             "one custom label",

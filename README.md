@@ -80,13 +80,18 @@ produces is always one it can read back, and a variant it refuses to read is one
 it refuses to write.
 
 Every parsed field survives a round trip, and a file this crate wrote is
-byte-stable. Byte-for-byte fidelity to a *foreign* file is not promised, because
-the reader does not model everything a file may hold:
+byte-stable. That includes the log block's own bookkeeping: instruments reserve
+the block in whole allocation units and pad the rest with nulls — 4096 bytes for
+153 bytes of text is typical — and both the reservation size and the padding are
+written back as they were.
 
-- the reserved tails of the header and subheader, and the log block's `logdsks`
-  area, are written as nulls;
+Byte-for-byte fidelity to a *foreign* file is still not promised, because the
+reader does not model everything a file may hold:
+
+- the reserved tails of the header, the subheader and the log block header are
+  written as nulls, as is anything a log block held after its text area;
 - log entries separated by nulls come back separated by newlines, and trailing
-  whitespace in the log text is trimmed;
+  whitespace in the log text is trimmed, which shrinks `logsizd` to match;
 - text that was not valid UTF-8 is decoded lossily, and a field that grows past
   its slot that way is reported rather than truncated.
 
@@ -149,7 +154,7 @@ The test suite builds SPC files byte by byte in memory
 cargo test
 ```
 
-Six suites, with different jobs:
+Seven suites, with different jobs:
 
 - `roundtrip.rs` — parses a known-good file and checks every field matches.
 - `unsupported.rs` — each refused variant is refused for the *right* stated
@@ -172,6 +177,20 @@ Six suites, with different jobs:
   file can fail to be written, refused for the right stated reason.
 - `build.rs` — `SpcBuilder`, checked the same way: a file built from a spectrum
   and its metadata must come out byte-identical to the fixture.
+- `real_files.rs` — the one check the others cannot make. A reader and a writer
+  that share a mistake about the format agree with each other perfectly; only a
+  file from foreign software settles it. Instrument exports cannot live in this
+  repository, so the suite reads from a directory you point it at and skips when
+  you do not:
+
+  ```sh
+  SPC_SAMPLE_DIR=/path/to/spc/files cargo test --test real_files
+  ```
+
+  Each file must parse or name the feature it needs, every modelled field must
+  survive a round trip, and every byte that differs from the original must fall
+  in a region this README lists above. Failures name byte offsets and field
+  names, never field contents.
 
 ## Related work
 

@@ -18,7 +18,7 @@
 mod common;
 
 use common::{Rng, SpcBuilder as RawSpc};
-use spc_spectra::{Header, Spc, SpcBuilder, SpcDate, SpcError};
+use spc_spectra::{Header, LogBlock, Spc, SpcBuilder, SpcDate, SpcError};
 
 /// Corrupts a valid file in a few random places, then truncates it randomly.
 #[test]
@@ -227,6 +227,7 @@ fn whatever_parses_can_be_written_back_and_parsed_again() {
         assert_eq!(again.header.fnpts, spc.header.fnpts);
         assert_eq!(again.header.ffirst, spc.header.ffirst);
         assert_eq!(again.header.fcmnt, spc.header.fcmnt);
+        assert_log_survives(spc.log.as_ref(), again.log.as_ref());
         round_tripped += 1;
     }
 
@@ -234,6 +235,26 @@ fn whatever_parses_can_be_written_back_and_parsed_again() {
         round_tripped > 0,
         "no mutated file survived to be written — is the corruption too aggressive?"
     );
+}
+
+/// Compares two log blocks field by field.
+///
+/// Three of the block's five numbers are recomputed on write, being offsets
+/// into the block being built. The other two are what the acquiring software
+/// recorded, and have to come back unchanged like any other parsed field.
+#[track_caller]
+fn assert_log_survives(before: Option<&LogBlock>, after: Option<&LogBlock>) {
+    let (before, after) = match (before, after) {
+        (None, None) => return,
+        (a, b) => (
+            a.expect("a log block appeared out of nowhere"),
+            b.expect("the log block disappeared"),
+        ),
+    };
+    assert_eq!(before.logsizm, after.logsizm, "logsizm changed");
+    assert_eq!(before.logdsks, after.logdsks, "logdsks changed");
+    assert_eq!(before.text, after.text, "log text changed");
+    assert_eq!(before.binary, after.binary, "log binary area changed");
 }
 
 /// Compares two axes bit for bit, counting NaN as equal to NaN.

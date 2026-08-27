@@ -24,8 +24,22 @@ Only add files whose licensing you have actually checked:
 `exclude = ["tests/data/*"]`. Revisit that line once real files are committed
 and their licensing is settled.
 
-## Verifying against a real file
+## Verifying against real files
+
+Point the optional suite at a directory of instrument exports. It never reads
+from this directory by default, so the files can stay wherever they are:
 
 ```sh
-cargo run --example dump -- tests/data/your-file.spc
+SPC_SAMPLE_DIR=/path/to/spc/files cargo test --test real_files
+```
+
+Each file must parse or name the feature it needs, every modelled field must
+survive a round trip, and every byte that differs from the original must fall in
+a region the README documents. Failures name byte offsets and field names, never
+field contents.
+
+To look at a single file:
+
+```sh
+cargo run --example dump -- your-file.spc
 ```

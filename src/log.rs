@@ -23,6 +23,18 @@ pub struct LogBlock {
     pub logbins: u32,
     /// Size of the vendor-reserved disk area.
     pub logdsks: u32,
+    /// How many bytes the block occupied in the file it was read from, or
+    /// `None` for a block that was built rather than read.
+    ///
+    /// Not a field of the format. Instruments reserve the block in whole
+    /// allocation units and pad the rest with nulls, which is what `logsizm`
+    /// then describes; recording the extent lets writing put that padding back.
+    ///
+    /// Measured to the end of the file, which is the block only because the log
+    /// block is the last thing an SPC file holds. A variant that puts something
+    /// after it — `TXYXYS` carries a subfile directory — would need this
+    /// measured differently first.
+    pub stored_size: Option<u32>,
     /// The binary area, passed through as-is.
     pub binary: Vec<u8>,
     /// The text area, decoded lossily and passed through as-is.
@@ -53,18 +65,23 @@ impl LogBlock {
             logtxto,
             logbins: binary.len() as u32,
             logdsks: 0,
+            stored_size: None,
             binary,
             text,
         }
     }
 
-    /// The text offset and on-disk size a block with this content will have.
+    /// The text offset and block size a block with this content will have.
     ///
-    /// The text is measured trimmed, because that is how it is written: see
-    /// [`Self::write`].
+    /// `logsizd` spans the block's start to the end of the text, so the text is
+    /// `logsizd - logtxto` bytes long — the calculation other readers of this
+    /// format perform, and how instrument files write it. The terminating null
+    /// sits just past `logsizd`.
+    ///
+    /// The text is measured trimmed, because that is how it is written.
     fn sizes(binary: &[u8], text: &str) -> (u32, u32) {
         let logtxto = (Self::HEADER_SIZE + binary.len()) as u32;
-        (logtxto, logtxto + text.trim().len() as u32 + 1)
+        (logtxto, logtxto + text.trim().len() as u32)
     }
 
     /// Reads the log block starting at `offset`.
@@ -109,25 +126,32 @@ impl LogBlock {
             decode_log_text(c.bytes(rest, CTX)?)
         };
 
+        // The block is the last thing in the file, so everything after
+        // `offset` is the block: content plus any padding.
+        let stored_size = u32::try_from(c.len() - offset).ok();
+
         Ok(Some(Self {
             logsizd,
             logsizm,
             logtxto,
             logbins,
             logdsks,
+            stored_size,
             binary,
             text,
         }))
     }
 
     /// Writes the log block: its own 64 byte header, the binary area, then the
-    /// text area with a terminating null.
+    /// text area with a terminating null, then any padding the block had.
     ///
-    /// The four size fields are recomputed from what is actually written rather
-    /// than copied from the struct — they are offsets into the block being
-    /// built, and a stale one would send a reader looking in the wrong place.
-    /// `logdsks` is written as zero: it describes a vendor-reserved disk area
-    /// this crate does not carry.
+    /// `logsizd`, `logtxto` and `logbins` are recomputed: they are offsets and
+    /// lengths into the block being built, so only the writer knows them.
+    ///
+    /// `logsizm` and `logdsks` are written back unchanged. Neither describes
+    /// these bytes — one is the memory the acquiring software reserved, the
+    /// other a vendor-reserved area — so recomputing them would discard
+    /// information the file carried.
     ///
     /// The text is written trimmed, exactly as [`crate::bytes::decode_log_text`]
     /// would hand it back, so that writing a file that was just read reproduces
@@ -138,15 +162,26 @@ impl LogBlock {
         let (logtxto, logsizd) = Self::sizes(&self.binary, &self.text);
 
         s.u32(logsizd);
-        s.u32(logsizd); // logsizm: the block is the same size in memory
+        s.u32(self.logsizm);
         s.u32(logtxto);
         s.u32(self.binary.len() as u32);
-        s.u32(0); // logdsks
+        s.u32(self.logdsks);
         s.pad_to(start + Self::HEADER_SIZE);
 
         s.bytes(&self.binary);
         s.bytes(text.as_bytes());
         s.u8(0);
+
+        // Restore the padding, so a `logsizm` claiming a 4096 byte reservation
+        // is backed by real bytes. The target comes from the file the block was
+        // read from, never from `logsizm`: padding to a field out of the file
+        // would turn a corrupt value into an allocation of any size.
+        if let Some(stored) = self.stored_size {
+            let target = start.saturating_add(stored as usize);
+            if target > s.pos() {
+                s.pad_to(target);
+            }
+        }
     }
 
     /// Best-effort iterator over `key=value` pairs in the text area.

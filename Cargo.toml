@@ -1,6 +1,6 @@
 [package]
 name = "spc-spectra"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Reader and writer for SPC spectroscopy files (Thermo Galactic / GRAMS format) used by FT-IR, Raman, NIR and UV-VIS instruments"

@@ -79,6 +79,11 @@ pub struct SpcBuilder {
     y: Vec<f32>,
     log_text: Option<String>,
     log_binary: Vec<u8>,
+    /// Written as `logsizm`; defaults to whatever `logsizd` works out to.
+    log_sizm: Option<u32>,
+    log_dsks: u32,
+    /// Total block size including trailing null padding.
+    log_pad_to: Option<u32>,
 }
 
 impl Default for SpcBuilder {
@@ -121,6 +126,9 @@ impl SpcBuilder {
             y,
             log_text: Some("Channel=1\nIntegration=100ms\n".into()),
             log_binary: Vec::new(),
+            log_sizm: None,
+            log_dsks: 0,
+            log_pad_to: None,
         }
     }
 
@@ -249,6 +257,25 @@ impl SpcBuilder {
         self
     }
 
+    /// Sets `logsizm` independently of `logsizd`. Instruments reserve the block
+    /// in whole allocation units, so the two routinely disagree.
+    pub fn log_sizm(mut self, v: u32) -> Self {
+        self.log_sizm = Some(v);
+        self
+    }
+
+    /// Sets the vendor-reserved `logdsks` field.
+    pub fn log_dsks(mut self, v: u32) -> Self {
+        self.log_dsks = v;
+        self
+    }
+
+    /// Pads the log block with nulls to `v` bytes in total.
+    pub fn log_pad_to(mut self, v: u32) -> Self {
+        self.log_pad_to = Some(v);
+        self
+    }
+
     pub fn no_log(mut self) -> Self {
         self.log_text = None;
         self.log_binary.clear();
@@ -330,16 +357,23 @@ impl SpcBuilder {
             assert_eq!(out.len() as u32, flogoff, "log block must land on flogoff");
             let logtxto = (spc_spectra::LogBlock::HEADER_SIZE + self.log_binary.len()) as u32;
             let text = self.log_text.clone().unwrap_or_default();
-            let logsizd = logtxto + text.len() as u32 + 1;
+            // From the block's start to the end of the text; the terminating
+            // null below sits past logsizd, as instrument files have it.
+            let logsizd = logtxto + text.len() as u32;
             out.extend_from_slice(&logsizd.to_le_bytes());
-            out.extend_from_slice(&logsizd.to_le_bytes()); // logsizm
+            out.extend_from_slice(&self.log_sizm.unwrap_or(logsizd).to_le_bytes());
             out.extend_from_slice(&logtxto.to_le_bytes());
             out.extend_from_slice(&(self.log_binary.len() as u32).to_le_bytes());
-            out.extend_from_slice(&0u32.to_le_bytes()); // logdsks
+            out.extend_from_slice(&self.log_dsks.to_le_bytes());
             out.resize(flogoff as usize + spc_spectra::LogBlock::HEADER_SIZE, 0);
             out.extend_from_slice(&self.log_binary);
             out.extend_from_slice(text.as_bytes());
             out.push(0);
+            if let Some(total) = self.log_pad_to {
+                let end = flogoff as usize + total as usize;
+                assert!(end >= out.len(), "log_pad_to is smaller than the content");
+                out.resize(end, 0);
+            }
         }
 
         out
