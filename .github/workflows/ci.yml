@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Nothing here writes back to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A superseded pull request run is wasted work, but a superseded push to main
+  # would leave a landed commit with no result at all.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The Windows runner would otherwise use PowerShell, so every platform runs a
+# different shell than the one these lines were written for.
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide what the others would have said.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+      # Also compiles the examples and runs the doc tests, so a stale snippet
+      # in the documentation fails here. The real_files suite needs
+      # SPC_SAMPLE_DIR and stays inert without it: no sample file belongs in
+      # this repository.
+      - name: Test
+        run: cargo test
+      # debug_assert! and the arithmetic overflow checks are gone in release.
+      # That makes this a different run of the same suite, not a repetition.
+      - name: Test (release)
+        run: cargo test --release
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add clippy rustfmt
+      - name: Format
+        run: cargo fmt --check
+      # -D warnings covers the rustc lints too, which is what makes the
+      # missing_docs warning from Cargo.toml fatal here.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      # What only rustdoc sees: a doc comment whose [link] resolves to nothing.
+      - name: Documentation
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # Builds the archive that `cargo publish` would upload and compiles it,
+      # so a source file that `exclude` drops by accident surfaces now rather
+      # than after the version number on crates.io is spent.
+      - name: Package
+        run: cargo package
+
+  msrv:
+    name: msrv (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install 1.85
+        run: rustup toolchain install 1.85 --profile minimal --no-self-update
+      # The crate has no dependencies, so this tests the source against the
+      # oldest compiler it claims, with nothing else in the way.
+      - name: Test
+        run: cargo +1.85 test

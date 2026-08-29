@@ -1,5 +1,6 @@
 # spc-spectra
 
+[![CI](https://github.com/bsenkel/spc-spectra/actions/workflows/ci.yml/badge.svg)](https://github.com/bsenkel/spc-spectra/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/spc-spectra.svg)](https://crates.io/crates/spc-spectra)
 [![docs.rs](https://img.shields.io/docsrs/spc-spectra)](https://docs.rs/spc-spectra)
 [![License](https://img.shields.io/crates/l/spc-spectra.svg)](LICENSE-MIT)
