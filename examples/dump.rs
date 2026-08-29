@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! cargo run --example dump -- spectrum.spc
+//! cargo run --example dump -- series.spc --sub 7
 //! ```
 //!
 //! This doubles as the tool for checking the parser against real instrument
@@ -11,9 +12,21 @@
 use spc_spectra::Spc;
 
 fn main() -> std::process::ExitCode {
-    let Some(path) = std::env::args().nth(1) else {
-        eprintln!("usage: dump <file.spc>");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(path) = args.first().cloned() else {
+        eprintln!("usage: dump <file.spc> [--sub N]");
         return std::process::ExitCode::FAILURE;
+    };
+    // Which spectrum to tabulate, counted from 1 as the file numbers them.
+    let wanted = match args.iter().position(|a| a == "--sub") {
+        None => 1,
+        Some(at) => match args.get(at + 1).and_then(|n| n.parse::<usize>().ok()) {
+            Some(n) if n >= 1 => n,
+            _ => {
+                eprintln!("--sub takes a subfile number, counting from 1");
+                return std::process::ExitCode::FAILURE;
+            }
+        },
     };
 
     let spc = match Spc::from_path(&path) {
@@ -36,7 +49,8 @@ fn main() -> std::process::ExitCode {
     );
     println!("Comment       {}", show(&h.fcmnt));
     println!("Flags         {:#010b}", h.ftflgs.0);
-    println!("Points        {}", spc.y().len());
+    println!("Points        {}", spc.subfiles[0].len());
+    println!("Subfiles      {}", spc.subfiles.len());
     println!("Scans         {}", spc.subfiles[0].subheader.subscan);
     println!(
         "x axis        {} .. {}  [{}]",
@@ -46,7 +60,20 @@ fn main() -> std::process::ExitCode {
     );
     println!("y axis        [{}]", spc.y_label());
 
-    let sub = &spc.subfiles[0];
+    let Some(sub) = spc.subfiles.get(wanted - 1) else {
+        eprintln!(
+            "{path}: no subfile {wanted}; the file holds {}",
+            spc.subfiles.len()
+        );
+        return std::process::ExitCode::FAILURE;
+    };
+    // Named even for a single-subfile file, so that a multifile record never
+    // looks like an ordinary one.
+    println!(
+        "\nSubfile {wanted} of {} (z = {})",
+        spc.subfiles.len(),
+        sub.subheader.subtime
+    );
     println!("\n{:>14}  {:>14}", "x", "y");
     let n = sub.len();
     for (i, (x, y)) in sub.points().enumerate() {

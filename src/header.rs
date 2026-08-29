@@ -143,6 +143,42 @@ impl fmt::Display for SpcDate {
     }
 }
 
+/// How the z values of a multifile record relate to one another.
+///
+/// Only meaningful for a file holding more than one spectrum. It says whether a
+/// reader may compute each spectrum's z value from the first one and a constant
+/// step, or has to read every `subtime` — which is the difference between
+/// placing a spectrum where it was measured and where it roughly ought to be.
+///
+/// This is about the *spacing* of the z values; [`XType`] on `fztype` says what
+/// they mean. See [`Header::z_spacing`] and [`crate::SpcBuilder::z_spacing`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ZSpacing {
+    /// Evenly spaced: neither flag set, the format's default.
+    #[default]
+    Even,
+    /// In order, but not evenly spaced ([`TFlags::TORDRD`]). Instruments that
+    /// cannot hold an exact interval write this.
+    Uneven,
+    /// In no particular order ([`TFlags::TRANDM`]).
+    Unordered,
+}
+
+impl ZSpacing {
+    /// The `ftflgs` bits this spacing sets. `Even` sets none.
+    ///
+    /// Provided so that callers rarely need to `match` on the enum, which is
+    /// `#[non_exhaustive]` like every other public type here.
+    pub const fn flags(self) -> u8 {
+        match self {
+            Self::Even => 0,
+            Self::Uneven => TFlags::TORDRD,
+            Self::Unordered => TFlags::TRANDM,
+        }
+    }
+}
+
 /// Generates an enum of unit/technique codes with a catch-all variant.
 macro_rules! code_enum {
     (
@@ -517,16 +553,15 @@ impl Header {
             other => return Err(SpcError::BadVersion(other)),
         }
 
-        // Checked before TXVALS/TMULTI because a TXYXYS file is also flagged
-        // as both, and this is the more specific diagnosis.
+        // Checked first because a TXYXYS file is also flagged as TXVALS and
+        // TMULTI, and this is the more specific diagnosis. It also keeps the
+        // log block the last thing in the file, which `LogBlock::stored_size`
+        // relies on.
         if self.ftflgs.contains(TFlags::TXYXYS) {
             return Err(Unsupported::XyxySubfiles.into());
         }
         if self.ftflgs.contains(TFlags::TXVALS) {
             return Err(Unsupported::ExplicitXValues.into());
-        }
-        if self.ftflgs.contains(TFlags::TMULTI) || self.fnsub > 1 {
-            return Err(Unsupported::MultiFile.into());
         }
         if self.ftflgs.contains(TFlags::TSPREC) {
             return Err(Unsupported::SixteenBitY.into());
@@ -582,6 +617,23 @@ impl Header {
             }
         }
         Ok(())
+    }
+
+    /// How the z values of the subfiles relate to one another.
+    ///
+    /// Derived from `ftflgs`, and a reading convenience only: writing passes
+    /// the flags through as they were found, so a file that sets both
+    /// [`TFlags::TRANDM`] and [`TFlags::TORDRD`] keeps both bits even though
+    /// this reports [`ZSpacing::Unordered`] for it. `TRANDM` wins because
+    /// treating unordered values as ordered is the harmful direction.
+    pub const fn z_spacing(&self) -> ZSpacing {
+        if self.ftflgs.contains(TFlags::TRANDM) {
+            ZSpacing::Unordered
+        } else if self.ftflgs.contains(TFlags::TORDRD) {
+            ZSpacing::Uneven
+        } else {
+            ZSpacing::Even
+        }
     }
 
     /// The custom axis labels from `fcatxt`, split at null bytes.

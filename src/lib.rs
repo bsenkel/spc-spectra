@@ -9,11 +9,15 @@
 //! let spc = Spc::from_path("spectrum.spc")?;
 //!
 //! println!("{} ({})", spc.header.fexper, spc.header.fsource);
-//! println!("{} points, {} .. {} {}", spc.y().len(), spc.header.ffirst,
+//! println!("{} points, {} .. {} {}", spc.subfiles[0].y.len(), spc.header.ffirst,
 //!          spc.header.flast, spc.x_label());
 //!
-//! for (x, y) in spc.subfiles[0].points().take(5) {
-//!     println!("{x:10.3}  {y:12.6}");
+//! // One subfile per spectrum: a single measurement has one, a series many.
+//! for sub in &spc.subfiles {
+//!     println!("z = {}", sub.subheader.subtime);
+//!     for (x, y) in sub.points().take(5) {
+//!         println!("{x:10.3}  {y:12.6}");
+//!     }
 //! }
 //! # Ok::<(), spc_spectra::SpcError>(())
 //! ```
@@ -39,6 +43,25 @@
 //! # Ok::<(), spc_spectra::SpcError>(())
 //! ```
 //!
+//! A file holding a series of spectra is one x axis and many curves, each with
+//! the z value that places it in the series:
+//!
+//! ```no_run
+//! use spc_spectra::{SpcBuilder, XType, ZSpacing};
+//!
+//! let spectra: Vec<(f32, Vec<f64>)> = vec![
+//!     (16.57, vec![0.11, 0.12, 0.14]),
+//!     (17.42, vec![0.10, 0.13, 0.15]),
+//! ];
+//!
+//! SpcBuilder::series(900.0, 1700.0, spectra)
+//!     .z_type(XType::Seconds)
+//!     .z_spacing(ZSpacing::Uneven)
+//!     .build()?
+//!     .to_path("series.spc")?;
+//! # Ok::<(), spc_spectra::SpcError>(())
+//! ```
+//!
 //! Reading and writing cover exactly the same ground, and deliberately so: the
 //! writer runs the reader's own validation before it writes a byte, so a file
 //! this crate produces is always one it can read back. The x axis is not stored
@@ -55,13 +78,14 @@
 //!
 //! # What this version reads and writes
 //!
-//! Version 0.2 deliberately covers only the most common variant, which is what
-//! a typical single-spectrum export from a modern instrument looks like:
+//! Version 0.3 deliberately covers only the most common variants, which is what
+//! a typical export from a modern instrument looks like — a single spectrum, or
+//! a series of them sharing one x axis:
 //!
 //! | Aspect | Supported |
 //! |---|---|
 //! | Version byte | `0x4B` (new format, little-endian) |
-//! | Subfiles | exactly one |
+//! | Subfiles | one or many (`TMULTI`), sharing one x axis |
 //! | x axis | evenly spaced, generated from `ffirst`/`flast` |
 //! | y values | IEEE floats (`fexp = 0x80`) |
 //! | Log block | yes, passed through raw |
@@ -69,7 +93,7 @@
 //! Everything else is rejected with a specific [`Unsupported`] value rather
 //! than parsed on a guess — and, since the writer runs the same checks, rather
 //! than written on a guess either: big-endian files (`0x4C`), the old format (`0x4D`),
-//! multifile records, `TXYXYS`, explicit x values (`TXVALS`), 16-bit y values
+//! `TXYXYS`, explicit x values (`TXVALS`), 16-bit y values
 //! (`TSPREC`), multi-plane data cubes (`fwplanes > 1`) and Galactic fixed-point
 //! y values — including the case where the subheader's own `subexp` contradicts
 //! the file-wide `fexp`.
@@ -102,9 +126,10 @@
 //! Writing applies it in the other direction, refusing to put a contradiction
 //! into a file rather than to take one out of it: a point count that disagrees
 //! with the y values, an x axis that is not the evenly spaced one the end
-//! points describe (writing it would substitute that axis silently), a text
-//! field longer than its fixed-width slot, and a finite y value with no 32 bit
-//! float equivalent.
+//! points describe (writing it would substitute that axis silently), an `fnsub`
+//! that disagrees with the number of subfiles (a reader loops over `fnsub`, so
+//! the rest would be unreachable), a text field longer than its fixed-width
+//! slot, and a finite y value with no 32 bit float equivalent.
 //!
 //! # Handling the unsupported cases
 //!
@@ -112,7 +137,7 @@
 //! use spc_spectra::{Spc, SpcError};
 //!
 //! match Spc::from_bytes(&[]) {
-//!     Ok(spc) => println!("{} points", spc.y().len()),
+//!     Ok(spc) => println!("{} points", spc.subfiles[0].y.len()),
 //!     Err(SpcError::Unsupported(u)) => eprintln!("known variant, not decoded yet: {u}"),
 //!     Err(SpcError::BadVersion(_)) => eprintln!("this is not an SPC file"),
 //!     Err(e) => eprintln!("{e}"),
@@ -140,7 +165,7 @@ pub use builder::SpcBuilder;
 pub use error::{SpcError, Unsupported};
 pub use header::{
     FEXP_IEEE_FLOAT, Header, SpcDate, TFlags, Technique, VERSION_NEW_BE, VERSION_NEW_LE,
-    VERSION_OLD, XType, YType,
+    VERSION_OLD, XType, YType, ZSpacing,
 };
 pub use log::LogBlock;
 pub use spc::{Spc, Subfile};

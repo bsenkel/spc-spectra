@@ -121,7 +121,7 @@ fn an_unreachable_log_offset_still_yields_the_spectrum() {
 
         let spc = Spc::from_bytes(&data)
             .unwrap_or_else(|e| panic!("flogoff {offset} should have been survivable: {e}"));
-        assert_eq!(spc.y().len(), common::DEFAULT_NPTS as usize);
+        assert_eq!(spc.subfiles[0].y.len(), common::DEFAULT_NPTS as usize);
     }
 }
 
@@ -195,46 +195,82 @@ fn a_log_offset_inside_the_data_is_refused() {
 /// are meant to be the same set — and a corrupted file is the sharpest way to
 /// test it, because it reaches header combinations no instrument would produce.
 /// The round trip has to survive them all, not just the tidy ones.
+///
+/// Run over a multifile base as well as a single one. That is where `fnsub`
+/// becomes a mutable count the reader loops over, so it is also what exercises
+/// the bound that stops a corrupted count from becoming an allocation.
 #[test]
 fn whatever_parses_can_be_written_back_and_parsed_again() {
-    let base = RawSpc::new().build();
-    let mut rng = Rng::new();
-    let mut round_tripped = 0usize;
+    for (shape, base) in [
+        ("one subfile", RawSpc::new().build()),
+        ("four subfiles", RawSpc::new().spectra(4).build()),
+    ] {
+        let mut rng = Rng::new();
+        let mut round_tripped = 0usize;
 
-    for _ in 0..20_000 {
-        let mut data = base.clone();
-        for _ in 0..1 + rng.below(6) {
-            let i = rng.below(data.len());
-            data[i] = rng.next() as u8;
+        for _ in 0..20_000 {
+            let mut data = base.clone();
+            for _ in 0..1 + rng.below(6) {
+                let i = rng.below(data.len());
+                data[i] = rng.next() as u8;
+            }
+            let len = data.len() - rng.below(data.len());
+
+            let Ok(spc) = Spc::from_bytes(&data[..len]) else {
+                continue;
+            };
+            let bytes = match spc.to_bytes() {
+                Ok(bytes) => bytes,
+                // The one documented exception: text that was not valid UTF-8
+                // is decoded lossily, and each replaced byte becomes a three
+                // byte U+FFFD, which can push the field past its slot.
+                Err(SpcError::FieldTooLong { .. }) => continue,
+                Err(e) => panic!("{shape}: a file that parsed could not be written back: {e}"),
+            };
+
+            let again = Spc::from_bytes(&bytes).expect("what the writer produced must parse");
+            assert_subfiles_survive(&spc, &again, shape);
+            assert_eq!(again.header.fnpts, spc.header.fnpts);
+            assert_eq!(again.header.fnsub, spc.header.fnsub);
+            assert_eq!(again.header.ftflgs.0, spc.header.ftflgs.0);
+            assert_eq!(again.header.ffirst, spc.header.ffirst);
+            assert_eq!(again.header.fcmnt, spc.header.fcmnt);
+            assert_log_survives(spc.log.as_ref(), again.log.as_ref());
+            round_tripped += 1;
         }
-        let len = data.len() - rng.below(data.len());
 
-        let Ok(spc) = Spc::from_bytes(&data[..len]) else {
-            continue;
-        };
-        let bytes = match spc.to_bytes() {
-            Ok(bytes) => bytes,
-            // The one documented exception: text that was not valid UTF-8 is
-            // decoded lossily, and each replaced byte becomes a three byte
-            // U+FFFD, which can push the field past the slot it came from.
-            Err(SpcError::FieldTooLong { .. }) => continue,
-            Err(e) => panic!("a file that parsed could not be written back: {e}"),
-        };
-
-        let again = Spc::from_bytes(&bytes).expect("what the writer produced must parse");
-        assert_same(spc.y(), again.y(), "y values");
-        assert_same(spc.x(), again.x(), "x values");
-        assert_eq!(again.header.fnpts, spc.header.fnpts);
-        assert_eq!(again.header.ffirst, spc.header.ffirst);
-        assert_eq!(again.header.fcmnt, spc.header.fcmnt);
-        assert_log_survives(spc.log.as_ref(), again.log.as_ref());
-        round_tripped += 1;
+        assert!(
+            round_tripped > 0,
+            "{shape}: no mutated file survived to be written — is the corruption too aggressive?"
+        );
     }
+}
 
-    assert!(
-        round_tripped > 0,
-        "no mutated file survived to be written — is the corruption too aggressive?"
+/// Compares every subfile, not just the first.
+///
+/// `subindx` and `subtime` are what tell subfiles apart, so they are compared
+/// as well: without them a subheader written against the wrong data block would
+/// still look like a faithful round trip.
+#[track_caller]
+fn assert_subfiles_survive(before: &Spc, after: &Spc, shape: &str) {
+    assert_eq!(
+        before.subfiles.len(),
+        after.subfiles.len(),
+        "{shape}: subfile count changed"
     );
+    for (i, (a, b)) in before.subfiles.iter().zip(&after.subfiles).enumerate() {
+        assert_same(&a.y, &b.y, &format!("{shape}: subfile {i} y"));
+        assert_same(&a.x, &b.x, &format!("{shape}: subfile {i} x"));
+        assert_eq!(
+            a.subheader.subindx, b.subheader.subindx,
+            "{shape}: subfile {i} subindx changed"
+        );
+        assert_eq!(
+            a.subheader.subtime.to_bits(),
+            b.subheader.subtime.to_bits(),
+            "{shape}: subfile {i} subtime changed"
+        );
+    }
 }
 
 /// Compares two log blocks field by field.
@@ -366,7 +402,11 @@ impl Spectrum {
 
     #[track_caller]
     fn assert_survived(&self, read: &Spc, case: &str) {
-        assert_eq!(read.y().len(), self.y.len(), "{case}: point count");
+        assert_eq!(
+            read.subfiles[0].y.len(),
+            self.y.len(),
+            "{case}: point count"
+        );
         assert_eq!(read.header.ffirst, self.first, "{case}: ffirst");
         assert_eq!(read.header.flast, self.last, "{case}: flast");
         assert_eq!(read.header.fsource, self.source, "{case}: fsource");
@@ -380,7 +420,7 @@ impl Spectrum {
         // y values pass through a 32 bit float, so what comes back is the
         // narrowed value — not the f64 that went in. Anything else would mean
         // the writer changed a number it was only supposed to store.
-        for (i, (got, want)) in read.y().iter().zip(&self.y).enumerate() {
+        for (i, (got, want)) in read.subfiles[0].y.iter().zip(&self.y).enumerate() {
             assert_eq!(
                 got.to_bits(),
                 f64::from(*want as f32).to_bits(),

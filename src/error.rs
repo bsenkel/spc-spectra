@@ -115,6 +115,9 @@ pub enum Unsupported {
     /// `fversn = 0x4D`: the old DOS-era format with a 256 byte header.
     OldFormat,
     /// More than one subfile (`TMULTI`, or `fnsub` greater than one).
+    ///
+    /// No longer produced as of 0.3.0, which reads and writes these files. The
+    /// variant stays so that existing `match` arms keep compiling.
     MultiFile,
     /// `TXYXYS`: every subfile carries its own x axis plus a directory.
     XyxySubfiles,

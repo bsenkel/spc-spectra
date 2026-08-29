@@ -129,8 +129,8 @@ impl SubHeader {
     /// Number of points in this subfile.
     ///
     /// A `subnpts` of zero is not an empty subfile: it is the common shorthand
-    /// for "the same count as the main header", used whenever a single subfile
-    /// shares the file-wide x axis.
+    /// for "the same count as the main header", used whenever a subfile shares
+    /// the file-wide x axis — which, without `TXYXYS`, they all do.
     pub const fn npts(&self, header: &Header) -> u32 {
         if self.subnpts == 0 {
             header.fnpts

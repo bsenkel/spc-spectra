@@ -6,6 +6,9 @@
 //! subfile with `subnpts = 0`, IEEE float y values and a log block of plain
 //! `key=value` lines. That puts the log block at byte 512 + 32 + 801 * 4 =
 //! 3748, the geometry an export of that size has.
+//!
+//! `spectra` and `series` turn that into a multifile record: one subheader and
+//! one y block per spectrum, which moves the log block accordingly.
 
 #![allow(dead_code)] // Not every test uses every knob.
 
@@ -54,6 +57,15 @@ pub const DEFAULT_NPTS: u32 = 801;
 pub const DEFAULT_FIRST: f64 = 900.0;
 pub const DEFAULT_LAST: f64 = 1700.0;
 
+/// One subfile: its own y values plus the two subheader fields that tell
+/// subfiles apart in a multifile record. The remaining subheader fields are
+/// file-wide knobs on the builder.
+pub struct Sub {
+    pub y: Vec<f32>,
+    pub subindx: u16,
+    pub subtime: f32,
+}
+
 /// Fluent builder for a byte-exact SPC file.
 pub struct SpcBuilder {
     ftflgs: u8,
@@ -63,7 +75,8 @@ pub struct SpcBuilder {
     fnpts: Option<u32>,
     ffirst: f64,
     flast: f64,
-    fnsub: u32,
+    /// Written as `fnsub`; defaults to the number of subfiles.
+    fnsub: Option<u32>,
     fwplanes: u32,
     fxtype: u8,
     fytype: u8,
@@ -76,7 +89,7 @@ pub struct SpcBuilder {
     subscan: u32,
     /// Written into the subheader; defaults to whatever `fexp` is.
     subexp: Option<i8>,
-    y: Vec<f32>,
+    subs: Vec<Sub>,
     log_text: Option<String>,
     log_binary: Vec<u8>,
     /// Written as `logsizm`; defaults to whatever `logsizd` works out to.
@@ -96,6 +109,11 @@ impl SpcBuilder {
     /// A valid, fully supported file: 0x4B, one subfile, float y values.
     pub fn new() -> Self {
         let y = (0..DEFAULT_NPTS).map(|i| 0.1 + i as f32 * 0.001).collect();
+        let subs = vec![Sub {
+            y,
+            subindx: 0,
+            subtime: 0.0,
+        }];
         Self {
             ftflgs: 0,
             fversn: 0x4B,
@@ -104,7 +122,7 @@ impl SpcBuilder {
             fnpts: None,
             ffirst: DEFAULT_FIRST,
             flast: DEFAULT_LAST,
-            fnsub: 1,
+            fnsub: None,
             fwplanes: 0,
             fxtype: 3, // nanometers
             fytype: 2, // absorbance
@@ -123,7 +141,7 @@ impl SpcBuilder {
             subnpts: 0, // inherit fnpts
             subscan: 1,
             subexp: None,
-            y,
+            subs,
             log_text: Some("Channel=1\nIntegration=100ms\n".into()),
             log_binary: Vec::new(),
             log_sizm: None,
@@ -158,8 +176,9 @@ impl SpcBuilder {
         self
     }
 
+    /// Overrides `fnsub` independently of how many subfiles are written.
     pub fn fnsub(mut self, v: u32) -> Self {
-        self.fnsub = v;
+        self.fnsub = Some(v);
         self
     }
 
@@ -242,8 +261,58 @@ impl SpcBuilder {
         self
     }
 
+    /// Replaces everything with a single subfile holding these y values.
     pub fn y(mut self, values: Vec<f32>) -> Self {
-        self.y = values;
+        self.subs = vec![Sub {
+            y: values,
+            subindx: 0,
+            subtime: 0.0,
+        }];
+        self
+    }
+
+    /// Appends a subfile, numbering it and spacing its z value by one.
+    pub fn add_spectrum(self, values: Vec<f32>) -> Self {
+        let subtime = self.subs.len() as f32;
+        self.add_spectrum_at(subtime, values)
+    }
+
+    /// Appends a subfile with an explicit z value.
+    pub fn add_spectrum_at(mut self, subtime: f32, values: Vec<f32>) -> Self {
+        let subindx = self.subs.len() as u16;
+        self.subs.push(Sub {
+            y: values,
+            subindx,
+            subtime,
+        });
+        self
+    }
+
+    /// Replaces everything with the given series: one `(z, y)` pair per subfile.
+    pub fn series(mut self, items: Vec<(f32, Vec<f32>)>) -> Self {
+        self.subs = items
+            .into_iter()
+            .enumerate()
+            .map(|(i, (subtime, y))| Sub {
+                y,
+                subindx: i as u16,
+                subtime,
+            })
+            .collect();
+        self
+    }
+
+    /// `n` subfiles whose y values differ from each other, so that a swapped
+    /// or repeated data block cannot pass unnoticed.
+    pub fn spectra(mut self, n: usize) -> Self {
+        let npts = self.subs.first().map_or(0, |s| s.y.len());
+        self.subs = (0..n)
+            .map(|i| Sub {
+                y: (0..npts).map(|j| i as f32 + j as f32 * 0.001).collect(),
+                subindx: i as u16,
+                subtime: i as f32,
+            })
+            .collect();
         self
     }
 
@@ -284,7 +353,12 @@ impl SpcBuilder {
 
     /// Byte offset at which the log block will be written.
     pub fn log_offset(&self) -> u32 {
-        (Header::SIZE + SubHeader::SIZE + self.y.len() * 4) as u32
+        let data: usize = self
+            .subs
+            .iter()
+            .map(|s| SubHeader::SIZE + s.y.len() * 4)
+            .sum();
+        (Header::SIZE + data) as u32
     }
 
     /// Serialises everything into a complete SPC file.
@@ -292,7 +366,10 @@ impl SpcBuilder {
         let mut out = Vec::new();
         let has_log = self.log_text.is_some() || !self.log_binary.is_empty();
         let flogoff = if has_log { self.log_offset() } else { 0 };
-        let fnpts = self.fnpts.unwrap_or(self.y.len() as u32);
+        let fnpts = self
+            .fnpts
+            .unwrap_or_else(|| self.subs.first().map_or(0, |s| s.y.len() as u32));
+        let fnsub = self.fnsub.unwrap_or(self.subs.len() as u32);
 
         // --- main header, 512 bytes ---
         out.push(self.ftflgs);
@@ -302,7 +379,7 @@ impl SpcBuilder {
         out.extend_from_slice(&fnpts.to_le_bytes());
         out.extend_from_slice(&self.ffirst.to_le_bytes());
         out.extend_from_slice(&self.flast.to_le_bytes());
-        out.extend_from_slice(&self.fnsub.to_le_bytes());
+        out.extend_from_slice(&fnsub.to_le_bytes());
         out.push(self.fxtype);
         out.push(self.fytype);
         out.push(0); // fztype
@@ -334,22 +411,23 @@ impl SpcBuilder {
             "main header must be exactly 512 bytes"
         );
 
-        // --- subheader, 32 bytes ---
-        let sub_start = out.len();
-        out.push(0); // subflgs
-        out.push(self.subexp.unwrap_or(self.fexp) as u8); // subexp
-        out.extend_from_slice(&0u16.to_le_bytes()); // subindx
-        out.extend_from_slice(&0.0f32.to_le_bytes()); // subtime
-        out.extend_from_slice(&0.0f32.to_le_bytes()); // subnext
-        out.extend_from_slice(&0.0f32.to_le_bytes()); // subnois
-        out.extend_from_slice(&self.subnpts.to_le_bytes());
-        out.extend_from_slice(&self.subscan.to_le_bytes());
-        out.extend_from_slice(&0.0f32.to_le_bytes()); // subwlevel
-        out.resize(sub_start + SubHeader::SIZE, 0);
+        // --- one 32 byte subheader and its y values per subfile ---
+        for sub in &self.subs {
+            let sub_start = out.len();
+            out.push(0); // subflgs
+            out.push(self.subexp.unwrap_or(self.fexp) as u8); // subexp
+            out.extend_from_slice(&sub.subindx.to_le_bytes());
+            out.extend_from_slice(&sub.subtime.to_le_bytes());
+            out.extend_from_slice(&0.0f32.to_le_bytes()); // subnext
+            out.extend_from_slice(&0.0f32.to_le_bytes()); // subnois
+            out.extend_from_slice(&self.subnpts.to_le_bytes());
+            out.extend_from_slice(&self.subscan.to_le_bytes());
+            out.extend_from_slice(&0.0f32.to_le_bytes()); // subwlevel
+            out.resize(sub_start + SubHeader::SIZE, 0);
 
-        // --- y values ---
-        for v in &self.y {
-            out.extend_from_slice(&v.to_le_bytes());
+            for v in &sub.y {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
         }
 
         // --- log block ---

@@ -110,17 +110,33 @@ fn a_file_with_no_subfile_at_all_is_refused() {
 }
 
 #[test]
-fn a_second_subfile_is_refused_as_the_unsupported_variant_it_is() {
-    // Not a NotWritable: multifile records are a real part of the format that
-    // this version does not do yet, and the error should say so.
+fn a_subfile_count_that_contradicts_fnsub_is_refused() {
+    // `fnsub` is what a reader loops over, so writing more subfiles than it
+    // announces would produce a file whose tail is unreachable.
     let mut spc = valid();
     let extra = spc.subfiles[0].clone();
     spc.subfiles.push(extra);
 
     assert!(
-        matches!(refusal(&spc), SpcError::Unsupported(Unsupported::MultiFile)),
-        "a second subfile must report MultiFile"
+        matches!(refusal(&spc), SpcError::NotWritable { .. }),
+        "a subfile count that disagrees with fnsub must be refused"
     );
+}
+
+#[test]
+fn the_multifile_flag_is_written_back_however_it_was_found() {
+    // TMULTI is an observation the file carried, not a fact about the subfile
+    // count. A file that contradicts itself has to come back unchanged rather
+    // than corrected, or reading and writing would cover different sets.
+    let mut spc = valid();
+    spc.header.ftflgs.0 |= TFlags::TMULTI;
+
+    let bytes = spc
+        .to_bytes()
+        .expect("one subfile flagged TMULTI is writable");
+    let again = Spc::from_bytes(&bytes).expect("and readable again");
+    assert!(again.header.ftflgs.contains(TFlags::TMULTI));
+    assert_eq!(again.subfiles.len(), 1);
 }
 
 #[test]
@@ -130,7 +146,7 @@ fn header_variants_the_reader_refuses_cannot_be_written_either() {
     /// Name of the variant, how to introduce it, and the error it must give.
     type Case = (&'static str, fn(&mut Spc), Unsupported);
 
-    let cases: [Case; 5] = [
+    let cases: [Case; 4] = [
         (
             "TXVALS",
             |s| s.header.ftflgs.0 |= TFlags::TXVALS,
@@ -140,11 +156,6 @@ fn header_variants_the_reader_refuses_cannot_be_written_either() {
             "TSPREC",
             |s| s.header.ftflgs.0 |= TFlags::TSPREC,
             Unsupported::SixteenBitY,
-        ),
-        (
-            "TMULTI",
-            |s| s.header.ftflgs.0 |= TFlags::TMULTI,
-            Unsupported::MultiFile,
         ),
         (
             "fwplanes",

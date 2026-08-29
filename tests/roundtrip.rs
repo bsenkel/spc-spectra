@@ -3,7 +3,9 @@
 mod common;
 
 use common::{DEFAULT_FIRST, DEFAULT_LAST, DEFAULT_NPTS, SpcBuilder};
-use spc_spectra::{Header, Spc, SpcDate, SpcError, SubHeader, Technique, XType, YType};
+use spc_spectra::{
+    Header, Spc, SpcDate, SpcError, SubHeader, TFlags, Technique, XType, YType, ZSpacing,
+};
 
 fn parse(builder: &SpcBuilder) -> Spc {
     Spc::from_bytes(&builder.build()).expect("the default builder must produce a readable file")
@@ -17,7 +19,84 @@ fn reads_the_same_file_from_disk() {
     let from_disk = Spc::from_path(&path).expect("from_path must read what from_bytes accepts");
     std::fs::remove_file(&path).ok();
 
-    assert_eq!(from_disk.y(), parse(&SpcBuilder::new()).y());
+    assert_eq!(
+        from_disk.subfiles[0].y,
+        parse(&SpcBuilder::new()).subfiles[0].y
+    );
+}
+
+#[test]
+fn a_multifile_record_yields_every_subfile() {
+    let spc = parse(&SpcBuilder::new().spectra(3));
+
+    assert_eq!(spc.header.fnsub, 3);
+    assert_eq!(spc.subfiles.len(), 3);
+    for (i, sub) in spc.subfiles.iter().enumerate() {
+        // The fixture gives subfile i a y ramp starting at i, so a data block
+        // read against the wrong subheader shows up here rather than nowhere.
+        assert_eq!(sub.y[0], i as f64, "subfile {i} has the wrong data");
+        assert_eq!(sub.subheader.subindx, i as u16);
+        assert_eq!(sub.subheader.subtime, i as f32);
+        assert_eq!(sub.len(), DEFAULT_NPTS as usize);
+        assert_eq!(sub.x[0], DEFAULT_FIRST);
+        assert_eq!(sub.x[sub.len() - 1], DEFAULT_LAST);
+    }
+}
+
+#[test]
+#[allow(deprecated)]
+fn the_deprecated_accessors_still_read_the_first_subfile() {
+    // Deprecated is not removed: code written against 0.2 keeps working. On a
+    // multifile record they return the first spectrum and say nothing about
+    // the rest, which is exactly what the deprecation note warns about.
+    let spc = parse(&SpcBuilder::new().spectra(3));
+
+    assert_eq!(spc.y(), spc.subfiles[0].y.as_slice());
+    assert_eq!(spc.x(), spc.subfiles[0].x.as_slice());
+    assert_ne!(spc.y(), spc.subfiles[1].y.as_slice());
+}
+
+#[test]
+fn the_multifile_flag_alone_is_not_a_subfile_count() {
+    // Files exist that set TMULTI while carrying one subfile. `fnsub` is the
+    // count; the flag is read as the observation it is.
+    let spc = parse(&SpcBuilder::new().ftflgs(TFlags::TMULTI));
+    assert_eq!(spc.subfiles.len(), 1);
+    assert!(spc.header.ftflgs.contains(TFlags::TMULTI));
+}
+
+#[test]
+fn the_z_spacing_flags_are_read_and_written_back_as_found() {
+    // TRANDM wins when a file sets both, because treating unordered z values
+    // as ordered is the harmful direction. The flags themselves are passed
+    // through untouched, contradiction included.
+    let both = TFlags::TMULTI | TFlags::TORDRD | TFlags::TRANDM;
+    let spc = parse(&SpcBuilder::new().spectra(2).ftflgs(both));
+    assert_eq!(spc.header.z_spacing(), ZSpacing::Unordered);
+
+    let again = Spc::from_bytes(&spc.to_bytes().unwrap()).unwrap();
+    assert_eq!(
+        again.header.ftflgs.0, both,
+        "the flags must survive as found"
+    );
+}
+
+#[test]
+fn a_subfile_count_larger_than_the_data_is_refused() {
+    let raw = SpcBuilder::new().spectra(2).fnsub(4).no_log().build();
+    let err = Spc::from_bytes(&raw).unwrap_err();
+    assert!(matches!(err, SpcError::TooShort { .. }), "got {err:?}");
+}
+
+#[test]
+fn an_absurd_subfile_count_is_refused_before_it_is_allocated() {
+    // `fnsub` is a u32 out of the file, and the reader sizes a collection
+    // from it. Unchecked, a corrupt count reserves room for four billion
+    // subfiles and then reports whatever the log block's leading bytes look
+    // like as a subheader — the wrong diagnosis, on a good day.
+    let raw = SpcBuilder::new().fnsub(u32::MAX).build();
+    let err = Spc::from_bytes(&raw).unwrap_err();
+    assert!(matches!(err, SpcError::TooShort { .. }), "got {err:?}");
 }
 
 #[test]
@@ -69,8 +148,8 @@ fn y_values_survive_bit_for_bit() {
     let builder = SpcBuilder::new().y(values.clone());
     let spc = parse(&builder);
 
-    assert_eq!(spc.y().len(), values.len());
-    for (got, want) in spc.y().iter().zip(&values) {
+    assert_eq!(spc.subfiles[0].y.len(), values.len());
+    for (got, want) in spc.subfiles[0].y.iter().zip(&values) {
         assert_eq!(
             got.to_bits(),
             f64::from(*want).to_bits(),
@@ -82,13 +161,17 @@ fn y_values_survive_bit_for_bit() {
 #[test]
 fn the_x_axis_spans_the_declared_range() {
     let spc = parse(&SpcBuilder::new());
-    let x = spc.x();
+    let x = &spc.subfiles[0].x;
 
     assert_eq!(x.len(), DEFAULT_NPTS as usize);
     assert_eq!(x[0], DEFAULT_FIRST, "first x must be exactly ffirst");
     assert_eq!(x[x.len() - 1], DEFAULT_LAST, "last x must be exactly flast");
     assert_eq!(x[1], 901.0, "801 points over 900..1700 nm is a 1 nm step");
-    assert_eq!(x.len(), spc.y().len(), "x and y must be the same length");
+    assert_eq!(
+        x.len(),
+        spc.subfiles[0].y.len(),
+        "x and y must be the same length"
+    );
 }
 
 #[test]
@@ -99,7 +182,7 @@ fn subnpts_zero_inherits_the_count_from_the_main_header() {
         "the raw field stays zero"
     );
     assert_eq!(
-        spc.y().len(),
+        spc.subfiles[0].y.len(),
         DEFAULT_NPTS as usize,
         "but the count comes from fnpts"
     );
@@ -109,7 +192,7 @@ fn subnpts_zero_inherits_the_count_from_the_main_header() {
 fn an_explicit_subnpts_gives_the_same_result() {
     let inherited = parse(&SpcBuilder::new().subnpts(0));
     let explicit = parse(&SpcBuilder::new().subnpts(DEFAULT_NPTS));
-    assert_eq!(inherited.y(), explicit.y());
+    assert_eq!(inherited.subfiles[0].y, explicit.subfiles[0].y);
 }
 
 #[test]
@@ -204,7 +287,7 @@ fn a_file_without_a_log_block_parses_fine() {
     let spc = parse(&SpcBuilder::new().no_log());
     assert_eq!(spc.header.flogoff, 0);
     assert!(spc.log.is_none());
-    assert_eq!(spc.y().len(), DEFAULT_NPTS as usize);
+    assert_eq!(spc.subfiles[0].y.len(), DEFAULT_NPTS as usize);
 }
 
 #[test]
@@ -215,14 +298,14 @@ fn a_log_offset_past_the_end_is_dropped_rather_than_fatal() {
 
     let spc = Spc::from_bytes(&raw).expect("a broken log block must not invalidate the spectrum");
     assert!(spc.log.is_none());
-    assert_eq!(spc.y().len(), DEFAULT_NPTS as usize);
+    assert_eq!(spc.subfiles[0].y.len(), DEFAULT_NPTS as usize);
 }
 
 #[test]
 fn a_single_point_spectrum_works() {
     let spc = parse(&SpcBuilder::new().y(vec![0.42]).range(1000.0, 1000.0));
-    assert_eq!(spc.x(), &[1000.0]);
-    assert_eq!(spc.y(), &[f64::from(0.42f32)]);
+    assert_eq!(spc.subfiles[0].x, &[1000.0]);
+    assert_eq!(spc.subfiles[0].y, &[f64::from(0.42f32)]);
 }
 
 #[test]
@@ -232,7 +315,7 @@ fn a_descending_wavenumber_axis_works() {
             .y(vec![1.0, 2.0, 3.0, 4.0])
             .range(4000.0, 400.0),
     );
-    assert_eq!(spc.x(), &[4000.0, 2800.0, 1600.0, 400.0]);
+    assert_eq!(spc.subfiles[0].x, &[4000.0, 2800.0, 1600.0, 400.0]);
 }
 
 #[test]
@@ -293,7 +376,7 @@ fn a_truncated_log_block_still_yields_the_spectrum() {
     for len in (builder.log_offset() as usize..full.len()).step_by(3) {
         let spc = Spc::from_bytes(&full[..len])
             .unwrap_or_else(|e| panic!("prefix of {len} bytes should still parse: {e}"));
-        assert_eq!(spc.y().len(), DEFAULT_NPTS as usize);
+        assert_eq!(spc.subfiles[0].y.len(), DEFAULT_NPTS as usize);
     }
 }
 

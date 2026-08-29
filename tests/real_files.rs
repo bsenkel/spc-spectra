@@ -147,7 +147,6 @@ fn every_difference_from_the_original_bytes_is_one_this_crate_documents() {
         }
 
         let written = spc.to_bytes().expect("already shown to be writable");
-        let log_offset = spc.header.flogoff as usize;
 
         assert_eq!(
             written.len(),
@@ -162,7 +161,7 @@ fn every_difference_from_the_original_bytes_is_one_this_crate_documents() {
             .enumerate()
             .filter(|(_, (a, b))| a != b)
             .map(|(at, _)| at)
-            .filter(|&at| documented(at, log_offset).is_none())
+            .filter(|&at| documented(at, &spc).is_none())
             .collect();
         assert!(
             unexplained.is_empty(),
@@ -175,17 +174,27 @@ fn every_difference_from_the_original_bytes_is_one_this_crate_documents() {
 }
 
 /// The regions the README lists as not reproduced byte for byte.
-fn documented(offset: usize, log_offset: usize) -> Option<&'static str> {
+///
+/// Takes the parsed file rather than a bare offset, because a multifile record
+/// carries one unmodelled subheader tail per subfile and their positions depend
+/// on how many points each one holds.
+fn documented(offset: usize, spc: &Spc) -> Option<&'static str> {
     const HEADER_TAIL: usize = 325;
     const SUBHEADER_TAIL: usize = 28;
 
     if (HEADER_TAIL..Header::SIZE).contains(&offset) {
         return Some("the header's reserved tail");
     }
-    let sub = Header::SIZE;
-    if (sub + SUBHEADER_TAIL..sub + SubHeader::SIZE).contains(&offset) {
-        return Some("the subheader's reserved tail");
+
+    let mut at = Header::SIZE;
+    for sub in &spc.subfiles {
+        if (at + SUBHEADER_TAIL..at + SubHeader::SIZE).contains(&offset) {
+            return Some("a subheader's reserved tail");
+        }
+        at += SubHeader::SIZE + sub.y.len() * 4;
     }
+
+    let log_offset = spc.header.flogoff as usize;
     if log_offset != 0 && offset >= log_offset {
         // Spelled out rather than left to a catch-all: `logsizm` (4..8) and
         // `logdsks` (16..20) are preserved, so a difference there is a

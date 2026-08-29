@@ -43,7 +43,7 @@ impl Subfile {
 ///
 /// ```no_run
 /// let spc = spc_spectra::Spc::from_path("spectrum.spc")?;
-/// println!("{} points from {} to {}", spc.y().len(), spc.header.ffirst, spc.header.flast);
+/// println!("{} points from {} to {}", spc.subfiles[0].y.len(), spc.header.ffirst, spc.header.flast);
 /// # Ok::<(), spc_spectra::SpcError>(())
 /// ```
 #[derive(Debug, Clone)]
@@ -51,7 +51,7 @@ impl Subfile {
 pub struct Spc {
     /// The 512 byte main header.
     pub header: Header,
-    /// The subfiles. This version reads, and writes, exactly one.
+    /// The subfiles, in file order. A single-spectrum file has exactly one.
     pub subfiles: Vec<Subfile>,
     /// The log block, if the file has one and it could be read.
     pub log: Option<LogBlock>,
@@ -71,59 +71,87 @@ impl Spc {
         let header = Header::parse(&mut c)?;
         header.validate()?;
 
-        let subheader = SubHeader::parse(&mut c)?;
-        subheader.validate(&header)?;
-
-        let npts = subheader.npts(&header);
-        if npts == 0 {
-            return Err(SpcError::InvalidPointCount(npts));
-        }
-        let npts = npts as usize;
-
-        // The log block sits after the data, so `flogoff` is also a statement
-        // about where the y values end. Cross-checking the two catches a
-        // corrupted point count that would otherwise silently pull log block
-        // bytes into the spectrum as extra "measurements".
-        let data_end = c
-            .pos()
-            .saturating_add(npts.saturating_mul(size_of::<f32>()));
-        if header.flogoff != 0 && data_end > header.flogoff as usize {
-            return Err(SpcError::DataOverrunsLogBlock {
-                data_end,
-                log_offset: header.flogoff,
-            });
-        }
-
-        // Reject an absurd count before allocating for it.
-        if npts.saturating_mul(size_of::<f32>()) > c.remaining() {
+        // `fnsub` is a count out of the file, so it is bounded before it turns
+        // into an allocation. A subfile cannot cost less than its subheader,
+        // which makes that a floor from the format rather than a guess.
+        let nsub = header.fnsub as usize;
+        let least = nsub.saturating_mul(SubHeader::SIZE);
+        if least > c.remaining() {
             return Err(SpcError::TooShort {
-                context: "the y values",
-                needed: npts * size_of::<f32>(),
+                context: "the subfiles",
+                needed: least,
                 available: c.remaining(),
             });
         }
 
-        let mut y = Vec::with_capacity(npts);
-        for _ in 0..npts {
-            y.push(f64::from(c.f32("the y values")?));
+        let mut subfiles = Vec::with_capacity(nsub);
+        for _ in 0..nsub {
+            let subheader = SubHeader::parse(&mut c)?;
+            subheader.validate(&header)?;
+
+            let npts = subheader.npts(&header);
+            if npts == 0 {
+                return Err(SpcError::InvalidPointCount(npts));
+            }
+            let npts = npts as usize;
+
+            // The log block sits after the data, so `flogoff` is also a
+            // statement about where the y values end. Cross-checking the two
+            // catches a corrupted point count that would otherwise silently
+            // pull log block bytes into the spectrum as extra "measurements".
+            // Applied per subfile: every one of them ends before the block.
+            let data_end = c
+                .pos()
+                .saturating_add(npts.saturating_mul(size_of::<f32>()));
+            if header.flogoff != 0 && data_end > header.flogoff as usize {
+                return Err(SpcError::DataOverrunsLogBlock {
+                    data_end,
+                    log_offset: header.flogoff,
+                });
+            }
+
+            // Reject an absurd count before allocating for it.
+            let needed = npts.saturating_mul(size_of::<f32>());
+            if needed > c.remaining() {
+                return Err(SpcError::TooShort {
+                    context: "the y values",
+                    needed,
+                    available: c.remaining(),
+                });
+            }
+
+            let mut y = Vec::with_capacity(npts);
+            for _ in 0..npts {
+                y.push(f64::from(c.f32("the y values")?));
+            }
+            let x = generate_x(header.ffirst, header.flast, npts);
+
+            subfiles.push(Subfile { subheader, x, y });
         }
-        let x = generate_x(header.ffirst, header.flast, npts);
 
         let log = LogBlock::parse_at(&mut c, header.flogoff)?;
 
         Ok(Self {
             header,
-            subfiles: vec![Subfile { subheader, x, y }],
+            subfiles,
             log,
         })
     }
 
     /// x values of the first subfile.
+    #[deprecated(
+        since = "0.3.0",
+        note = "reads the first subfile only, which silently hides the rest of a multifile record; use the subfiles field, whose every entry has its own x"
+    )]
     pub fn x(&self) -> &[f64] {
         self.subfiles.first().map_or(&[], |s| &s.x)
     }
 
     /// y values of the first subfile.
+    #[deprecated(
+        since = "0.3.0",
+        note = "reads the first subfile only, which silently hides the rest of a multifile record; use the subfiles field, whose every entry has its own y"
+    )]
     pub fn y(&self) -> &[f64] {
         self.subfiles.first().map_or(&[], |s| &s.y)
     }
@@ -176,11 +204,14 @@ impl Spc {
     /// # Ok::<(), spc_spectra::SpcError>(())
     /// ```
     pub fn to_bytes(&self) -> Result<Vec<u8>, SpcError> {
-        let subfile = self.writable_subfile()?;
-        let npts = subfile.y.len();
+        let subfiles = self.writable_subfiles()?;
 
         // Where the y values end, which is also where the log block goes.
-        let data_end = Header::SIZE + SubHeader::SIZE + npts * size_of::<f32>();
+        let data_end = Header::SIZE
+            + subfiles
+                .iter()
+                .map(|sub| SubHeader::SIZE + sub.y.len() * size_of::<f32>())
+                .sum::<usize>();
         let flogoff = if self.log.is_some() {
             data_end as u32
         } else {
@@ -189,9 +220,11 @@ impl Spc {
 
         let mut s = Sink::with_capacity(data_end);
         self.header.write(&mut s, flogoff)?;
-        subfile.subheader.write(&mut s);
-        for &v in &subfile.y {
-            s.f32(v as f32);
+        for subfile in subfiles {
+            subfile.subheader.write(&mut s);
+            for &v in &subfile.y {
+                s.f32(v as f32);
+            }
         }
         debug_assert!(flogoff == 0 || s.pos() == flogoff as usize);
         if let Some(log) = &self.log {
@@ -211,7 +244,7 @@ impl Spc {
     }
 
     /// Checks that this file can be written as a readable SPC file, and returns
-    /// the single subfile to write.
+    /// the subfiles to write.
     ///
     /// The header and subheader checks are the *reader's* own
     /// ([`Header::validate`], [`SubHeader::validate`]), which is what makes
@@ -219,19 +252,33 @@ impl Spc {
     /// rest are contradictions that only a hand-assembled [`Spc`] can have: the
     /// reader cannot produce them, but it must still be impossible to write one
     /// out and discover it later.
-    pub(crate) fn writable_subfile(&self) -> Result<&Subfile, SpcError> {
+    pub(crate) fn writable_subfiles(&self) -> Result<&[Subfile], SpcError> {
         self.header.validate()?;
         self.header.validate_text_fields()?;
 
-        let subfile = match self.subfiles.as_slice() {
-            [only] => only,
-            [] => {
-                return Err(SpcError::NotWritable {
-                    detail: "there is no subfile to write",
-                });
-            }
-            _ => return Err(crate::error::Unsupported::MultiFile.into()),
-        };
+        if self.subfiles.is_empty() {
+            return Err(SpcError::NotWritable {
+                detail: "there is no subfile to write",
+            });
+        }
+        // `fnsub` is the count a reader loops over, so it has to be the number
+        // of subfiles actually written. The TMULTI flag is deliberately not
+        // checked against it: the flag is an observation the file carried, and
+        // one that contradicts its own count still has to come back unchanged.
+        if u32::try_from(self.subfiles.len()) != Ok(self.header.fnsub) {
+            return Err(SpcError::NotWritable {
+                detail: "fnsub does not match the number of subfiles",
+            });
+        }
+
+        for subfile in &self.subfiles {
+            self.validate_subfile(subfile)?;
+        }
+        Ok(&self.subfiles)
+    }
+
+    /// The per-subfile half of [`Self::writable_subfiles`].
+    fn validate_subfile(&self, subfile: &Subfile) -> Result<(), SpcError> {
         subfile.subheader.validate(&self.header)?;
 
         let npts = subfile.y.len();
@@ -281,7 +328,7 @@ impl Spc {
             }
         }
 
-        Ok(subfile)
+        Ok(())
     }
 }
 

@@ -9,7 +9,7 @@
 mod common;
 
 use common::{DEFAULT_FIRST, DEFAULT_LAST, DEFAULT_NPTS, SpcBuilder as RawSpc};
-use spc_spectra::{Spc, SpcDate, Technique, XType, YType};
+use spc_spectra::{Spc, SpcDate, TFlags, Technique, XType, YType};
 
 /// The default fixture, minus the trailing newline in the log text.
 ///
@@ -136,6 +136,28 @@ fn byte_comparison_cases() -> Vec<(&'static str, RawSpc)> {
             "logsizm and logdsks together",
             reference().log_sizm(4096).log_dsks(7).log_pad_to(4096),
         ),
+        // Multifile: the geometry a wrong flogoff or a subheader written from
+        // the wrong base survives with one subfile and cannot survive here.
+        ("two subfiles", reference().spectra(2)),
+        ("many subfiles", reference().spectra(9)),
+        (
+            "multifile without a log block",
+            reference().spectra(4).no_log(),
+        ),
+        (
+            "multifile, short spectra",
+            reference().y(ramp(3)).spectra(5).range(900.0, 1700.0),
+        ),
+        (
+            "multifile with a padded log block",
+            reference().spectra(3).log_sizm(4096).log_pad_to(4096),
+        ),
+        // TMULTI on a single subfile: a contradiction the format allows, and
+        // the flag is written back as found rather than corrected.
+        (
+            "multifile flag without multiple subfiles",
+            reference().ftflgs(TFlags::TMULTI),
+        ),
         // Custom axis labels: the 30 byte field, filled to different depths.
         (
             "one custom label",
@@ -212,14 +234,28 @@ fn every_shape_keeps_its_values_through_a_round_trip() {
         let before = parse(&builder.build());
         let after = parse(&before.to_bytes().unwrap());
 
-        assert_eq!(after.y().len(), before.y().len(), "case {name:?}: y length");
-        for (i, (a, b)) in before.y().iter().zip(after.y()).enumerate() {
+        assert_eq!(
+            after.subfiles[0].y.len(),
+            before.subfiles[0].y.len(),
+            "case {name:?}: y length"
+        );
+        for (i, (a, b)) in before.subfiles[0]
+            .y
+            .iter()
+            .zip(&after.subfiles[0].y)
+            .enumerate()
+        {
             assert!(
                 a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()),
                 "case {name:?}: y[{i}] changed from {a} to {b}"
             );
         }
-        for (i, (a, b)) in before.x().iter().zip(after.x()).enumerate() {
+        for (i, (a, b)) in before.subfiles[0]
+            .x
+            .iter()
+            .zip(&after.subfiles[0].x)
+            .enumerate()
+        {
             assert_eq!(a.to_bits(), b.to_bits(), "case {name:?}: x[{i}] changed");
         }
         assert_eq!(after.header.fnpts, before.header.fnpts, "case {name:?}");
@@ -306,7 +342,7 @@ fn the_inherit_from_fnpts_shorthand_is_kept_rather_than_expanded() {
         after.subfiles[0].subheader.subnpts, 0,
         "subnpts = 0 must stay the shorthand it was"
     );
-    assert_eq!(after.y().len(), DEFAULT_NPTS as usize);
+    assert_eq!(after.subfiles[0].y.len(), DEFAULT_NPTS as usize);
 }
 
 #[test]
@@ -315,8 +351,8 @@ fn y_values_survive_bit_for_bit() {
     let before = parse(&reference().y(values.clone()).build());
     let after = parse(&before.to_bytes().unwrap());
 
-    assert_eq!(after.y().len(), values.len());
-    for (got, want) in after.y().iter().zip(&values) {
+    assert_eq!(after.subfiles[0].y.len(), values.len());
+    for (got, want) in after.subfiles[0].y.iter().zip(&values) {
         assert_eq!(got.to_bits(), f64::from(*want).to_bits(), "changed: {want}");
     }
 }
@@ -330,10 +366,10 @@ fn non_finite_y_values_come_back_unchanged() {
         .build();
     let after = parse(&parse(&raw).to_bytes().unwrap());
 
-    assert!(after.y()[0].is_nan());
-    assert_eq!(after.y()[1], f64::INFINITY);
-    assert_eq!(after.y()[2], f64::NEG_INFINITY);
-    assert_eq!(after.y()[3], 1.0);
+    assert!(after.subfiles[0].y[0].is_nan());
+    assert_eq!(after.subfiles[0].y[1], f64::INFINITY);
+    assert_eq!(after.subfiles[0].y[2], f64::NEG_INFINITY);
+    assert_eq!(after.subfiles[0].y[3], 1.0);
 }
 
 #[test]
@@ -400,7 +436,7 @@ fn unusual_axis_shapes_are_written_correctly() {
     // ffirst) are the two shapes where generated-x arithmetic tends to break.
     let single = parse(&reference().y(vec![0.42]).range(1000.0, 1000.0).build());
     let single = parse(&single.to_bytes().unwrap());
-    assert_eq!(single.x(), &[1000.0]);
+    assert_eq!(single.subfiles[0].x, &[1000.0]);
 
     let descending = parse(
         &reference()
@@ -409,7 +445,7 @@ fn unusual_axis_shapes_are_written_correctly() {
             .build(),
     );
     let descending = parse(&descending.to_bytes().unwrap());
-    assert_eq!(descending.x(), &[4000.0, 2800.0, 1600.0, 400.0]);
+    assert_eq!(descending.subfiles[0].x, &[4000.0, 2800.0, 1600.0, 400.0]);
 }
 
 #[test]
@@ -421,9 +457,12 @@ fn writes_a_file_that_from_path_reads_back() {
     let after = Spc::from_path(&path).expect("from_path must read what to_path wrote");
     std::fs::remove_file(&path).ok();
 
-    assert_eq!(after.y(), before.y());
-    assert_eq!(after.x()[0], DEFAULT_FIRST);
-    assert_eq!(after.x()[after.x().len() - 1], DEFAULT_LAST);
+    assert_eq!(after.subfiles[0].y, before.subfiles[0].y);
+    assert_eq!(after.subfiles[0].x[0], DEFAULT_FIRST);
+    assert_eq!(
+        after.subfiles[0].x[after.subfiles[0].x.len() - 1],
+        DEFAULT_LAST
+    );
     assert_eq!(after.header.fexper, Technique::Nir);
     assert_eq!(after.header.fxtype, XType::Nanometers);
     assert_eq!(after.header.fytype, YType::Absorbance);

@@ -22,7 +22,7 @@ fills the gap in Rust.
 
 ```toml
 [dependencies]
-spc-spectra = "0.2"
+spc-spectra = "0.3"
 ```
 
 ## Usage
@@ -34,10 +34,14 @@ let spc = Spc::from_path("spectrum.spc")?;
 
 println!("{} ({})", spc.header.fexper, spc.header.fsource);
 println!("{} points, {} .. {} {}",
-         spc.y().len(), spc.header.ffirst, spc.header.flast, spc.x_label());
+         spc.subfiles[0].y.len(), spc.header.ffirst, spc.header.flast, spc.x_label());
 
-for (x, y) in spc.subfiles[0].points().take(5) {
-    println!("{x:10.3}  {y:12.6}");
+// One subfile per spectrum: a single measurement has one, a series has many.
+for (i, sub) in spc.subfiles.iter().enumerate() {
+    println!("spectrum {i}, z = {}", sub.subheader.subtime);
+    for (x, y) in sub.points().take(5) {
+        println!("{x:10.3}  {y:12.6}");
+    }
 }
 
 // The log block is vendor-specific and passed through raw.
@@ -73,6 +77,24 @@ SpcBuilder::new(900.0, 1700.0, y)   // first x, last x, the data
 
 The x axis is not stored in an SPC file — every reader regenerates it from the
 two end points — which is why the builder takes a range rather than x values.
+Every spectrum in a file shares it, so a series is one range and many curves:
+
+```rust
+use spc_spectra::{SpcBuilder, XType, ZSpacing};
+
+// One (z, y) pair per spectrum: z places it in the series, y is the curve.
+let spectra: Vec<(f32, Vec<f64>)> = vec![
+    (16.57, vec![/* ... */]),
+    (17.42, vec![/* ... */]),
+];
+
+SpcBuilder::series(900.0, 1700.0, spectra)
+    .z_type(XType::Seconds)        // what the z values mean
+    .z_spacing(ZSpacing::Uneven)   // and that they are not evenly spaced
+    .build()?
+    .to_path("series.spc")?;
+# Ok::<(), spc_spectra::SpcError>(())
+```
 
 Reading and writing cover exactly the same ground, on purpose: **the writer runs
 the reader's own validation before it writes a byte**, so a file this crate
@@ -100,19 +122,22 @@ Two command-line examples, which are also the round trip in the small:
 ```sh
 cargo run --example write -- spectrum.spc   # write a synthetic spectrum
 cargo run --example dump  -- spectrum.spc   # read it back
+cargo run --example dump  -- series.spc --sub 7   # one spectrum of a series
 ```
 
-## What version 0.2 reads and writes
+## What version 0.3 reads and writes
 
 | Aspect | Supported |
 | --- | --- |
 | Version byte | `0x4B` — new format, little-endian |
-| Subfiles | exactly one |
+| Subfiles | one or many (`TMULTI`), sharing one x axis |
 | x axis | evenly spaced, generated from `ffirst`/`flast` |
 | y values | IEEE floats (`fexp = 0x80`) |
 | Log block | yes, raw binary and text |
 | Bit-packed date (`fdate`) | yes |
 | `subnpts = 0` shorthand | yes, and kept as the shorthand when written |
+| Per-subfile `subtime`, `subindx`, `subscan` | yes |
+| z spacing (`TORDRD`, `TRANDM`) | read and written, via `ZSpacing` |
 
 ### Not yet supported
 
@@ -124,7 +149,6 @@ needs:
 | --- | --- |
 | Big-endian, `fversn = 0x4C` | `Unsupported::BigEndian` |
 | Old format, `fversn = 0x4D` | `Unsupported::OldFormat` |
-| Multiple subfiles (`TMULTI`) | `Unsupported::MultiFile` |
 | Per-subfile x axes (`TXYXYS`) | `Unsupported::XyxySubfiles` |
 | Explicit x values (`TXVALS`) | `Unsupported::ExplicitXValues` |
 | 16-bit y values (`TSPREC`) | `Unsupported::SixteenBitY` |
@@ -140,8 +164,8 @@ sample files to validate against.
 
 ## Roadmap
 
-Widening the supported set, in the order the table above lists it: multifile
-records (`TMULTI`) and explicit x values (`TXVALS`) are the two that come up
+Widening the supported set, in the order the table above lists it: explicit x
+values (`TXVALS`) and per-subfile x axes (`TXYXYS`) are the two that come up
 most in practice. Each needs a real-world sample file to validate against —
 see above.
 
@@ -164,19 +188,22 @@ Seven suites, with different jobs:
   garbage, and every plausible `flogoff`. Deterministic, so a failure is
   reproducible. It also holds the two properties the writer rests on: whatever
   the reader accepts, however mangled, must be writable and parse back the
-  same; and whatever `SpcBuilder` can express — 2 000 generated spectra, point
-  counts from 1 to 1 000, magnitudes from `1e-15` to `1e14`, text fields up to
-  their exact limit — must survive a round trip unchanged.
+  same — run over a single-spectrum and a four-spectrum file, so that `fnsub`
+  is itself among the mutated fields; and whatever `SpcBuilder` can express —
+  2 000 generated spectra, point counts from 1 to 1 000, magnitudes from
+  `1e-15` to `1e14`, text fields up to their exact limit — must survive a
+  round trip unchanged.
 - `write.rs` — a parsed file, written back, must be **byte-identical** to the
   hand-assembled fixture. Checking the writer against the reader alone would
-  pass happily if both shared a mistake about the layout. Run over three dozen
-  named shapes — point counts, axis directions, log block combinations, text
-  fields at their limits — because most layout mistakes survive any single
-  geometry.
+  pass happily if both shared a mistake about the layout. Run over four dozen
+  named shapes — point counts, subfile counts, axis directions, log block
+  combinations, text fields at their limits — because most layout mistakes
+  survive any single geometry.
 - `write_refuses.rs` — the writing counterpart to `unsupported.rs`: every way a
   file can fail to be written, refused for the right stated reason.
 - `build.rs` — `SpcBuilder`, checked the same way: a file built from a spectrum
-  and its metadata must come out byte-identical to the fixture.
+  and its metadata must come out byte-identical to the fixture, for a single
+  spectrum and for a timed series alike.
 - `real_files.rs` — the one check the others cannot make. A reader and a writer
   that share a mistake about the format agree with each other perfectly; only a
   file from foreign software settles it. Instrument exports cannot live in this

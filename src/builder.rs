@@ -2,17 +2,26 @@
 
 use crate::error::SpcError;
 use crate::header::{
-    FEXP_IEEE_FLOAT, Header, SpcDate, TFlags, Technique, VERSION_NEW_LE, XType, YType,
+    FEXP_IEEE_FLOAT, Header, SpcDate, TFlags, Technique, VERSION_NEW_LE, XType, YType, ZSpacing,
 };
 use crate::log::LogBlock;
 use crate::spc::{Spc, Subfile};
 use crate::subheader::{SubFlags, SubHeader};
 
-/// Builds a writable [`Spc`] from a spectrum and its metadata.
+/// One spectrum and the z value that places it in the series.
+#[derive(Debug, Clone)]
+struct Spectrum {
+    subtime: f32,
+    y: Vec<f64>,
+}
+
+/// Builds a writable [`Spc`] from one or more spectra and their metadata.
 ///
 /// The x axis is not stored in an SPC file; it is described by its two end
 /// points and the number of y values, and every reader regenerates it from
 /// those. That is why the axis is given as a range here rather than as values.
+/// Every spectrum in the file shares it: [`Self::series`] takes a whole series
+/// at once, [`Self::add_spectrum_at`] appends one more.
 ///
 /// Everything else has a defensible default, so a minimal file needs only the
 /// range and the data. What [`Self::build`] produces is always writable: it runs
@@ -50,24 +59,26 @@ use crate::subheader::{SubFlags, SubHeader};
 ///     .log_text("Channel=1\nIntegration=100ms")
 ///     .build()?;
 ///
-/// assert_eq!(spc.x()[0], 900.0);
-/// assert_eq!(spc.x()[800], 1700.0);
+/// assert_eq!(spc.subfiles[0].x[0], 900.0);
+/// assert_eq!(spc.subfiles[0].x[800], 1700.0);
 ///
 /// let bytes = spc.to_bytes()?;
 /// let read_back = spc_spectra::Spc::from_bytes(&bytes)?;
 ///
-/// assert_eq!(read_back.y().len(), spc.y().len());
+/// assert_eq!(read_back.subfiles[0].y.len(), spc.subfiles[0].y.len());
 /// // y values are stored as 32-bit floats, so the round trip costs precision.
-/// assert!((read_back.y()[0] - spc.y()[0]).abs() < 1e-7);
+/// assert!((read_back.subfiles[0].y[0] - spc.subfiles[0].y[0]).abs() < 1e-7);
 /// # Ok::<(), spc_spectra::SpcError>(())
 /// ```
 #[derive(Debug, Clone)]
 pub struct SpcBuilder {
     ffirst: f64,
     flast: f64,
-    y: Vec<f64>,
+    spectra: Vec<Spectrum>,
     fxtype: XType,
     fytype: YType,
+    fztype: XType,
+    z_spacing: ZSpacing,
     fexper: Technique,
     date: Option<SpcDate>,
     fres: String,
@@ -91,9 +102,11 @@ impl SpcBuilder {
         Self {
             ffirst: first,
             flast: last,
-            y,
+            spectra: vec![Spectrum { subtime: 0.0, y }],
             fxtype: XType::Arbitrary,
             fytype: YType::ArbitraryIntensity,
+            fztype: XType::Arbitrary,
+            z_spacing: ZSpacing::Even,
             fexper: Technique::General,
             date: None,
             fres: String::new(),
@@ -108,6 +121,46 @@ impl SpcBuilder {
         }
     }
 
+    /// Starts a file holding a series of spectra, each with the z value that
+    /// places it in the series — an acquisition time, a temperature, a
+    /// position.
+    ///
+    /// The counterpart to [`Self::new`] for a multifile record. Every spectrum
+    /// shares the one x axis `first ..= last` describes, so they all need the
+    /// same number of points; [`Self::build`] refuses a set that does not, and
+    /// an empty series.
+    ///
+    /// Unlike [`Self::new`], this records the first spectrum's z value as well.
+    /// Instrument files routinely have one: a series is timed from when the
+    /// instrument started, not from when this particular run began.
+    ///
+    /// ```
+    /// use spc_spectra::{SpcBuilder, XType};
+    ///
+    /// let spectra = vec![
+    ///     (16.57, vec![0.11, 0.12, 0.14]),
+    ///     (17.42, vec![0.10, 0.13, 0.15]),
+    ///     (18.30, vec![0.12, 0.11, 0.16]),
+    /// ];
+    ///
+    /// let spc = SpcBuilder::series(900.0, 1700.0, spectra)
+    ///     .z_type(XType::Seconds)
+    ///     .build()?;
+    ///
+    /// assert_eq!(spc.subfiles.len(), 3);
+    /// assert_eq!(spc.subfiles[0].subheader.subtime, 16.57);
+    /// # Ok::<(), spc_spectra::SpcError>(())
+    /// ```
+    pub fn series(first: f64, last: f64, spectra: Vec<(f32, Vec<f64>)>) -> Self {
+        Self {
+            spectra: spectra
+                .into_iter()
+                .map(|(subtime, y)| Spectrum { subtime, y })
+                .collect(),
+            ..Self::new(first, last, Vec::new())
+        }
+    }
+
     /// Sets the x axis unit (`fxtype`).
     #[must_use]
     pub fn x_type(mut self, t: XType) -> Self {
@@ -119,6 +172,75 @@ impl SpcBuilder {
     #[must_use]
     pub fn y_type(mut self, t: YType) -> Self {
         self.fytype = t;
+        self
+    }
+
+    /// Sets the unit of the z axis (`fztype`), which is what the per-spectrum
+    /// z values mean — a time, a temperature, a position.
+    ///
+    /// Only meaningful with more than one spectrum. [`Self::z_spacing`] states
+    /// how those values are spaced. See also [`Self::add_spectrum_at`].
+    #[must_use]
+    pub fn z_type(mut self, t: XType) -> Self {
+        self.fztype = t;
+        self
+    }
+
+    /// States how the z values are spaced, which sets `TORDRD` or `TRANDM`.
+    ///
+    /// Defaults to [`ZSpacing::Even`], which is what the format means when
+    /// neither flag is set — and what another program will assume, computing
+    /// each spectrum's z from the first one and a constant step instead of
+    /// reading it. An instrument that cannot hold an exact interval should say
+    /// [`ZSpacing::Uneven`], or its spectra land where they roughly ought to be
+    /// rather than where they were measured.
+    ///
+    /// Not derived from the values themselves: deciding whether two `f32`
+    /// intervals are "the same" needs a tolerance, and that is a guess this
+    /// crate leaves to the caller who knows the instrument.
+    ///
+    /// [`Self::z_type`] states what the values mean.
+    #[must_use]
+    pub fn z_spacing(mut self, s: ZSpacing) -> Self {
+        self.z_spacing = s;
+        self
+    }
+
+    /// Appends a further spectrum, sharing the x axis and every header field.
+    ///
+    /// Its z value stays zero. Only the caller knows what the series is ordered
+    /// by, and numbering the spectra 0, 1, 2 … would be data this crate made up;
+    /// [`Self::add_spectrum_at`] records the real value.
+    #[must_use]
+    pub fn add_spectrum(self, y: Vec<f64>) -> Self {
+        self.add_spectrum_at(0.0, y)
+    }
+
+    /// Appends a further spectrum together with the z value that places it in
+    /// the series (`subtime`), such as an acquisition time.
+    ///
+    /// Every spectrum needs the same number of points, since they all share the
+    /// one x axis the range describes; [`Self::build`] refuses a set that does
+    /// not. Whether the z values count as evenly spaced is [`Self::z_spacing`]:
+    /// that is a claim about the measurement, not something to read off the
+    /// numbers.
+    ///
+    /// ```
+    /// use spc_spectra::{SpcBuilder, XType};
+    ///
+    /// let spc = SpcBuilder::new(900.0, 1700.0, vec![0.1, 0.2])
+    ///     .z_type(XType::Seconds)
+    ///     .add_spectrum_at(1.5, vec![0.3, 0.4])
+    ///     .add_spectrum_at(3.0, vec![0.5, 0.6])
+    ///     .build()?;
+    ///
+    /// assert_eq!(spc.subfiles.len(), 3);
+    /// assert_eq!(spc.subfiles[2].subheader.subtime, 3.0);
+    /// # Ok::<(), spc_spectra::SpcError>(())
+    /// ```
+    #[must_use]
+    pub fn add_spectrum_at(mut self, z: f32, y: Vec<f64>) -> Self {
+        self.spectra.push(Spectrum { subtime: z, y });
         self
     }
 
@@ -164,7 +286,8 @@ impl SpcBuilder {
     /// The format has a field for this, so a spectrum averaged over 32 scans
     /// should say so there rather than only in the log text: another program
     /// reads `subscan`, while `Averages=32` in the log is a convention it has
-    /// no reason to know. Defaults to 1, a single scan.
+    /// no reason to know. Defaults to 1, a single scan, and applies to every
+    /// spectrum in the file.
     #[must_use]
     pub fn scans(mut self, n: u32) -> Self {
         self.subscan = n;
@@ -230,14 +353,44 @@ impl SpcBuilder {
     /// finite y value with no `f32` equivalent, and [`SpcError::FieldTooLong`]
     /// for a text field that does not fit its slot.
     pub fn build(self) -> Result<Spc, SpcError> {
-        let fnpts = u32::try_from(self.y.len()).map_err(|_| SpcError::NotWritable {
+        // `series` accepts any list, the empty one included.
+        let Some(head) = self.spectra.first() else {
+            return Err(SpcError::NotWritable {
+                detail: "there is no spectrum to write",
+            });
+        };
+
+        // Without TXYXYS every subfile shares the one x axis the range
+        // describes, so spectra of different lengths would each get a
+        // differently spaced axis over the same range. Refused rather than
+        // written: it is a mistake far more often than an intention.
+        let npts = head.y.len();
+        if self.spectra.iter().any(|s| s.y.len() != npts) {
+            return Err(SpcError::NotWritable {
+                detail: "the spectra do not all have the same number of points",
+            });
+        }
+        let fnpts = u32::try_from(npts).map_err(|_| SpcError::NotWritable {
             detail: "more points than the format's 32-bit count can hold",
         })?;
+        // `subindx` numbers the subfiles and is only 16 bits wide.
+        if self.spectra.len() > u16::MAX as usize + 1 {
+            return Err(SpcError::NotWritable {
+                detail: "more spectra than the format's 16-bit subfile index can number",
+            });
+        }
+        let fnsub = self.spectra.len() as u32;
 
         let mut ftflgs = TFlags::default();
         if self.talabs {
             ftflgs.0 |= TFlags::TALABS;
         }
+        if fnsub > 1 {
+            ftflgs.0 |= TFlags::TMULTI;
+        }
+        // Assigned from a fresh `ftflgs`, so `Even` leaves both bits clear
+        // rather than merely not setting them.
+        ftflgs.0 |= self.z_spacing.flags();
 
         let header = Header {
             ftflgs,
@@ -247,10 +400,10 @@ impl SpcBuilder {
             fnpts,
             ffirst: self.ffirst,
             flast: self.flast,
-            fnsub: 1,
+            fnsub,
             fxtype: self.fxtype,
             fytype: self.fytype,
-            fztype: XType::Arbitrary,
+            fztype: self.fztype,
             fpost: 0,
             fdate: self.date.map_or(0, SpcDate::to_packed),
             date: self.date,
@@ -275,21 +428,31 @@ impl SpcBuilder {
             fwtype: XType::Arbitrary,
         };
 
-        let subheader = SubHeader {
-            subflgs: SubFlags::default(),
-            subexp: FEXP_IEEE_FLOAT,
-            subindx: 0,
-            subtime: 0.0,
-            subnext: 0.0,
-            subnois: 0.0,
-            // The "same count as the main header" shorthand: with a single
-            // subfile there is nothing else it could be.
-            subnpts: 0,
-            subscan: self.subscan,
-            subwlevel: 0.0,
-        };
+        let x = crate::spc::generate_x(self.ffirst, self.flast, npts);
+        let subscan = self.subscan;
+        let subfiles = self
+            .spectra
+            .into_iter()
+            .enumerate()
+            .map(|(i, spectrum)| Subfile {
+                subheader: SubHeader {
+                    subflgs: SubFlags::default(),
+                    subexp: FEXP_IEEE_FLOAT,
+                    subindx: i as u16,
+                    subtime: spectrum.subtime,
+                    subnext: 0.0,
+                    subnois: 0.0,
+                    // The "same count as the main header" shorthand, which is
+                    // what every subfile here holds.
+                    subnpts: 0,
+                    subscan,
+                    subwlevel: 0.0,
+                },
+                x: x.clone(),
+                y: spectrum.y,
+            })
+            .collect();
 
-        let x = crate::spc::generate_x(self.ffirst, self.flast, self.y.len());
         let log = match (self.log_text, self.log_binary) {
             (None, b) if b.is_empty() => None,
             (text, binary) => Some(LogBlock::new(text.unwrap_or_default(), binary)),
@@ -297,17 +460,13 @@ impl SpcBuilder {
 
         let spc = Spc {
             header,
-            subfiles: vec![Subfile {
-                subheader,
-                x,
-                y: self.y,
-            }],
+            subfiles,
             log,
         };
 
         // Fail here rather than at the filesystem: a builder that hands back an
         // Spc which cannot be written has only postponed the error.
-        spc.writable_subfile()?;
+        spc.writable_subfiles()?;
         Ok(spc)
     }
 }

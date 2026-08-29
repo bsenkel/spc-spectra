@@ -13,6 +13,47 @@ anyone.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-28
+
+### Added
+
+- **Multifile records.** Files holding more than one spectrum — `TMULTI`, or an
+  `fnsub` greater than one — are read and written like any other. All subfiles
+  share the one x axis `ffirst`/`flast` describes; `TXYXYS`, where each carries
+  its own, is still refused. `Spc::subfiles` holds them in file order, each with
+  its own `subtime`, `subindx` and `subscan`.
+- `SpcBuilder::series` builds such a file from one `(z, y)` pair per spectrum.
+  Unlike `SpcBuilder::new` it records the first spectrum's z value, which
+  instrument files routinely have: a series is timed from when the instrument
+  started, not from when the run began.
+- `SpcBuilder::add_spectrum` and `add_spectrum_at` append one further spectrum
+  to a builder. `add_spectrum` leaves the z value at zero rather than numbering
+  the spectra, which would be data this crate invented.
+- `SpcBuilder::z_type` sets `fztype`, the unit the per-spectrum z values are in.
+- `ZSpacing`, with `SpcBuilder::z_spacing` and `Header::z_spacing`, states
+  whether the z values are evenly spaced, ordered but uneven (`TORDRD`) or in no
+  order at all (`TRANDM`). A file that says nothing claims even spacing, so
+  another program may compute each z from the first one and a constant step
+  instead of reading it. Never derived from the values: deciding whether two
+  `f32` intervals are "the same" needs a tolerance, which is the caller's call.
+- `examples/dump.rs` reports the number of subfiles and takes `--sub N` to
+  tabulate one of them.
+
+### Deprecated
+
+- `Spc::y()` and `Spc::x()`. They return the first subfile and say nothing about
+  the rest, which was harmless while a file could only hold one. Use
+  `Spc::subfiles`, whose every entry has its own `x` and `y`. Both still work.
+
+### Notes
+
+- `Unsupported::MultiFile` is no longer produced. The variant stays, so existing
+  `match` arms keep compiling.
+- The `TMULTI` flag is not cross-checked against the number of subfiles, on
+  reading or on writing: `fnsub` is the count, the flag an observation the file
+  carried. A file that contradicts itself is read as its count says and written
+  back unchanged, rather than corrected.
+
 ## [0.2.1] - 2026-08-28
 
 ### Fixed
@@ -87,7 +128,8 @@ separated by newlines, and text that was not valid UTF-8 is decoded lossily. See
   named `Unsupported` value rather than parsed on a guess. No dependencies, no
   `unsafe`.
 
-[Unreleased]: https://github.com/bsenkel/spc-spectra/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/bsenkel/spc-spectra/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/bsenkel/spc-spectra/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/bsenkel/spc-spectra/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/bsenkel/spc-spectra/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bsenkel/spc-spectra/releases/tag/v0.1.0
