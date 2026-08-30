@@ -1,12 +1,9 @@
 //! A minimal byte sink for building an SPC file in memory.
 //!
 //! The mirror image of [`crate::bytes::Cursor`]: this is the only place in the
-//! crate that appends raw bytes. Fixed-width text fields are the one thing that
-//! can fail here — a value too long for its slot is refused rather than
-//! truncated, because a silently shortened comment or instrument name is
-//! exactly the kind of quiet damage this crate exists to avoid.
-
-use crate::error::SpcError;
+//! crate that appends raw bytes. Nothing here can fail — every value handed to
+//! it has already been checked, and a text field arrives as the fixed number of
+//! bytes it occupies, see [`crate::text::TextField`].
 
 /// A write cursor that grows a `Vec<u8>`.
 pub(crate) struct Sink {
@@ -52,6 +49,7 @@ impl Sink {
 
     write_number!(u16, u16);
     write_number!(u32, u32);
+    write_number!(i32, i32);
     write_number!(f32, f32);
     write_number!(f64, f64);
 
@@ -63,34 +61,6 @@ impl Sink {
     /// Appends one signed byte.
     pub(crate) fn i8(&mut self, v: i8) {
         self.out.push(v as u8);
-    }
-
-    /// Writes a fixed-width, null-padded text field.
-    ///
-    /// A value that fills the slot exactly is written without a terminating
-    /// null. Real files do that — `fsource` is only nine bytes wide, and
-    /// instrument names run right up to the end of it — and the field's width
-    /// is what ends the value, so [`crate::bytes::decode_text`] reads it back
-    /// correctly. Insisting on a spare byte here would make a readable file
-    /// unwritable, so only a value longer than the slot is refused.
-    pub(crate) fn text(
-        &mut self,
-        s: &str,
-        width: usize,
-        field: &'static str,
-    ) -> Result<(), SpcError> {
-        let raw = s.as_bytes();
-        if raw.len() > width {
-            return Err(SpcError::FieldTooLong {
-                field,
-                max: width,
-                len: raw.len(),
-            });
-        }
-        let end = self.out.len() + width;
-        self.out.extend_from_slice(raw);
-        self.out.resize(end, 0);
-        Ok(())
     }
 
     /// Hands back the finished file.
@@ -112,39 +82,10 @@ mod tests {
     }
 
     #[test]
-    fn text_fields_are_null_padded_to_their_full_width() {
+    fn writes_a_negative_32_bit_integer() {
         let mut s = Sink::with_capacity(0);
-        s.text("2nm", 9, "fres").unwrap();
-        assert_eq!(s.pos(), 9);
-        assert_eq!(s.finish(), b"2nm\0\0\0\0\0\0");
-    }
-
-    #[test]
-    fn a_value_that_fills_the_slot_exactly_is_written_without_a_terminator() {
-        // A nine byte name in a nine byte field, which is what real exports
-        // look like. Rejecting it would make a readable file unwritable.
-        let mut s = Sink::with_capacity(0);
-        s.text("NIR probe", 9, "fsource").unwrap();
-        assert_eq!(s.finish(), b"NIR probe");
-    }
-
-    #[test]
-    fn a_value_longer_than_its_slot_is_refused_rather_than_truncated() {
-        let mut s = Sink::with_capacity(0);
-        match s.text("NIR probes", 9, "fsource") {
-            Err(SpcError::FieldTooLong { field, max, len }) => {
-                assert_eq!((field, max, len), ("fsource", 9, 10));
-            }
-            other => panic!("expected FieldTooLong, got {other:?}"),
-        }
-        assert_eq!(s.pos(), 0, "a refused write must leave nothing behind");
-    }
-
-    #[test]
-    fn an_empty_text_field_is_all_nulls() {
-        let mut s = Sink::with_capacity(0);
-        s.text("", 4, "fmethod").unwrap();
-        assert_eq!(s.finish(), vec![0, 0, 0, 0]);
+        s.i32(-2);
+        assert_eq!(s.finish(), vec![0xFE, 0xFF, 0xFF, 0xFF]);
     }
 
     #[test]

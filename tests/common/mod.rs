@@ -57,13 +57,51 @@ pub const DEFAULT_NPTS: u32 = 801;
 pub const DEFAULT_FIRST: f64 = 900.0;
 pub const DEFAULT_LAST: f64 = 1700.0;
 
+/// How a subfile stores its y values: IEEE floats, or Galactic fixed-point
+/// integers that the governing exponent scales.
+pub enum SubY {
+    /// Written as `f32`, which is what `fexp = 0x80` announces.
+    Float(Vec<f32>),
+    /// Written as `i32`; the reader multiplies by `2^(exp - 32)`.
+    Fixed(Vec<i32>),
+}
+
+impl SubY {
+    /// The number of y values, whichever form they take.
+    pub fn npts(&self) -> usize {
+        match self {
+            Self::Float(v) => v.len(),
+            Self::Fixed(v) => v.len(),
+        }
+    }
+
+    /// Appends the values little-endian, four bytes each either way.
+    fn write_to(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Float(v) => {
+                for x in v {
+                    out.extend_from_slice(&x.to_le_bytes());
+                }
+            }
+            Self::Fixed(v) => {
+                for x in v {
+                    out.extend_from_slice(&x.to_le_bytes());
+                }
+            }
+        }
+    }
+}
+
 /// One subfile: its own y values plus the two subheader fields that tell
 /// subfiles apart in a multifile record. The remaining subheader fields are
 /// file-wide knobs on the builder.
 pub struct Sub {
-    pub y: Vec<f32>,
+    pub y: SubY,
     pub subindx: u16,
     pub subtime: f32,
+    /// Overrides the file-wide `subexp` for this subfile alone, which is what
+    /// a `TMULTI` file needs to say that its subfiles are scaled differently.
+    pub subexp: Option<i8>,
 }
 
 /// Fluent builder for a byte-exact SPC file.
@@ -81,9 +119,9 @@ pub struct SpcBuilder {
     fxtype: u8,
     fytype: u8,
     fdate: u32,
-    fres: String,
-    fsource: String,
-    fcmnt: String,
+    fres: Vec<u8>,
+    fsource: Vec<u8>,
+    fcmnt: Vec<u8>,
     fcatxt: Vec<u8>,
     subnpts: u32,
     subscan: u32,
@@ -110,9 +148,10 @@ impl SpcBuilder {
     pub fn new() -> Self {
         let y = (0..DEFAULT_NPTS).map(|i| 0.1 + i as f32 * 0.001).collect();
         let subs = vec![Sub {
-            y,
+            y: SubY::Float(y),
             subindx: 0,
             subtime: 0.0,
+            subexp: None,
         }];
         Self {
             ftflgs: 0,
@@ -134,9 +173,9 @@ impl SpcBuilder {
                 minute: 37,
             }
             .to_packed(),
-            fres: "2nm".into(),
-            fsource: "NIR probe".into(),
-            fcmnt: "synthetic test spectrum".into(),
+            fres: b"2nm".to_vec(),
+            fsource: b"NIR probe".to_vec(),
+            fcmnt: b"synthetic test spectrum".to_vec(),
             fcatxt: Vec::new(),
             subnpts: 0, // inherit fnpts
             subscan: 1,
@@ -218,12 +257,27 @@ impl SpcBuilder {
     }
 
     pub fn comment(mut self, s: &str) -> Self {
-        self.fcmnt = s.into();
+        self.fcmnt = s.as_bytes().to_vec();
         self
     }
 
     pub fn source(mut self, s: &str) -> Self {
-        self.fsource = s.into();
+        self.fsource = s.as_bytes().to_vec();
+        self
+    }
+
+    /// Sets `fcmnt` from raw bytes, so that a test can put an embedded null or
+    /// a byte that is not UTF-8 into the field. Neither is reachable through a
+    /// `&str`, and both occur in files real instruments write.
+    pub fn comment_bytes(mut self, raw: &[u8]) -> Self {
+        self.fcmnt = raw.to_vec();
+        self
+    }
+
+    /// Sets `fres` from raw bytes, for the same reason as
+    /// [`Self::comment_bytes`].
+    pub fn resolution_bytes(mut self, raw: &[u8]) -> Self {
+        self.fres = raw.to_vec();
         self
     }
 
@@ -264,10 +318,41 @@ impl SpcBuilder {
     /// Replaces everything with a single subfile holding these y values.
     pub fn y(mut self, values: Vec<f32>) -> Self {
         self.subs = vec![Sub {
-            y: values,
+            y: SubY::Float(values),
             subindx: 0,
             subtime: 0.0,
+            subexp: None,
         }];
+        self
+    }
+
+    /// Replaces everything with one subfile of fixed-point y values and sets
+    /// `fexp` to the exponent that scales them.
+    ///
+    /// The raw integers are written as they are given: this builder states the
+    /// bytes, it does not compute them from measurements.
+    pub fn fixed_point(mut self, exp: i8, raw: Vec<i32>) -> Self {
+        self.fexp = exp;
+        self.subs = vec![Sub {
+            y: SubY::Fixed(raw),
+            subindx: 0,
+            subtime: 0.0,
+            subexp: None,
+        }];
+        self
+    }
+
+    /// Appends a fixed-point subfile carrying its own exponent, which is the
+    /// one a `TMULTI` file makes authoritative for that subfile.
+    pub fn add_fixed_spectrum(mut self, exp: i8, raw: Vec<i32>) -> Self {
+        let subindx = self.subs.len() as u16;
+        let subtime = self.subs.len() as f32;
+        self.subs.push(Sub {
+            y: SubY::Fixed(raw),
+            subindx,
+            subtime,
+            subexp: Some(exp),
+        });
         self
     }
 
@@ -281,9 +366,10 @@ impl SpcBuilder {
     pub fn add_spectrum_at(mut self, subtime: f32, values: Vec<f32>) -> Self {
         let subindx = self.subs.len() as u16;
         self.subs.push(Sub {
-            y: values,
+            y: SubY::Float(values),
             subindx,
             subtime,
+            subexp: None,
         });
         self
     }
@@ -294,9 +380,10 @@ impl SpcBuilder {
             .into_iter()
             .enumerate()
             .map(|(i, (subtime, y))| Sub {
-                y,
+                y: SubY::Float(y),
                 subindx: i as u16,
                 subtime,
+                subexp: None,
             })
             .collect();
         self
@@ -305,12 +392,13 @@ impl SpcBuilder {
     /// `n` subfiles whose y values differ from each other, so that a swapped
     /// or repeated data block cannot pass unnoticed.
     pub fn spectra(mut self, n: usize) -> Self {
-        let npts = self.subs.first().map_or(0, |s| s.y.len());
+        let npts = self.subs.first().map_or(0, |s| s.y.npts());
         self.subs = (0..n)
             .map(|i| Sub {
-                y: (0..npts).map(|j| i as f32 + j as f32 * 0.001).collect(),
+                y: SubY::Float((0..npts).map(|j| i as f32 + j as f32 * 0.001).collect()),
                 subindx: i as u16,
                 subtime: i as f32,
+                subexp: None,
             })
             .collect();
         self
@@ -356,7 +444,7 @@ impl SpcBuilder {
         let data: usize = self
             .subs
             .iter()
-            .map(|s| SubHeader::SIZE + s.y.len() * 4)
+            .map(|s| SubHeader::SIZE + s.y.npts() * 4)
             .sum();
         (Header::SIZE + data) as u32
     }
@@ -368,7 +456,7 @@ impl SpcBuilder {
         let flogoff = if has_log { self.log_offset() } else { 0 };
         let fnpts = self
             .fnpts
-            .unwrap_or_else(|| self.subs.first().map_or(0, |s| s.y.len() as u32));
+            .unwrap_or_else(|| self.subs.first().map_or(0, |s| s.y.npts() as u32));
         let fnsub = self.fnsub.unwrap_or(self.subs.len() as u32);
 
         // --- main header, 512 bytes ---
@@ -385,11 +473,11 @@ impl SpcBuilder {
         out.push(0); // fztype
         out.push(0); // fpost
         out.extend_from_slice(&self.fdate.to_le_bytes());
-        push_text(&mut out, &self.fres, 9);
-        push_text(&mut out, &self.fsource, 9);
+        push_field(&mut out, &self.fres, 9);
+        push_field(&mut out, &self.fsource, 9);
         out.extend_from_slice(&0u16.to_le_bytes()); // fpeakpt
         out.extend_from_slice(&[0u8; 32]); // fspare[8]
-        push_text(&mut out, &self.fcmnt, 130);
+        push_field(&mut out, &self.fcmnt, 130);
         let mut catxt = self.fcatxt.clone();
         catxt.resize(30, 0);
         out.extend_from_slice(&catxt);
@@ -399,7 +487,7 @@ impl SpcBuilder {
         out.push(0); // flevel
         out.extend_from_slice(&0u16.to_le_bytes()); // fsampin
         out.extend_from_slice(&1.0f32.to_le_bytes()); // ffactor
-        push_text(&mut out, "", 48); // fmethod
+        push_field(&mut out, b"", 48); // fmethod
         out.extend_from_slice(&0.0f32.to_le_bytes()); // fzinc
         out.extend_from_slice(&self.fwplanes.to_le_bytes()); // fwplanes
         out.extend_from_slice(&0.0f32.to_le_bytes()); // fwinc
@@ -415,7 +503,7 @@ impl SpcBuilder {
         for sub in &self.subs {
             let sub_start = out.len();
             out.push(0); // subflgs
-            out.push(self.subexp.unwrap_or(self.fexp) as u8); // subexp
+            out.push(sub.subexp.or(self.subexp).unwrap_or(self.fexp) as u8); // subexp
             out.extend_from_slice(&sub.subindx.to_le_bytes());
             out.extend_from_slice(&sub.subtime.to_le_bytes());
             out.extend_from_slice(&0.0f32.to_le_bytes()); // subnext
@@ -425,9 +513,7 @@ impl SpcBuilder {
             out.extend_from_slice(&0.0f32.to_le_bytes()); // subwlevel
             out.resize(sub_start + SubHeader::SIZE, 0);
 
-            for v in &sub.y {
-                out.extend_from_slice(&v.to_le_bytes());
-            }
+            sub.y.write_to(&mut out);
         }
 
         // --- log block ---
@@ -459,8 +545,7 @@ impl SpcBuilder {
 }
 
 /// Writes a null-padded fixed-width text field.
-fn push_text(out: &mut Vec<u8>, s: &str, width: usize) {
-    let bytes = s.as_bytes();
+fn push_field(out: &mut Vec<u8>, bytes: &[u8], width: usize) {
     let n = bytes.len().min(width);
     out.extend_from_slice(&bytes[..n]);
     out.resize(out.len() + (width - n), 0);

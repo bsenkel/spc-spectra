@@ -10,6 +10,10 @@ introduced by Galactic Industries and carried on in Thermo's GRAMS software. It
 is still the everyday interchange format for FT-IR, Raman, NIR, UV-VIS, NMR and
 MS data.
 
+It works on bytes, so the data need not come from a file at all: an instrument
+driver, a network stream or a database blob does just as well. `from_path` and
+`to_path` are conveniences over `from_bytes` and `to_bytes`.
+
 Readers for this format exist in Python, R, JavaScript and Julia. This crate
 fills the gap in Rust.
 
@@ -23,7 +27,7 @@ fills the gap in Rust.
 
 ```toml
 [dependencies]
-spc-spectra = "0.3"
+spc-spectra = "0.4"
 ```
 
 ## Usage
@@ -32,6 +36,8 @@ spc-spectra = "0.3"
 use spc_spectra::Spc;
 
 let spc = Spc::from_path("spectrum.spc")?;
+// or, when the bytes are already in hand:
+// let spc = Spc::from_bytes(&raw)?;
 
 println!("{} ({})", spc.header.fexper, spc.header.fsource);
 println!("{} points, {} .. {} {}",
@@ -114,9 +120,21 @@ reader does not model everything a file may hold:
 - the reserved tails of the header, the subheader and the log block header are
   written as nulls, as is anything a log block held after its text area;
 - log entries separated by nulls come back separated by newlines, and trailing
-  whitespace in the log text is trimmed, which shrinks `logsizd` to match;
-- text that was not valid UTF-8 is decoded lossily, and a field that grows past
-  its slot that way is reported rather than truncated.
+  whitespace in the log text is trimmed, which shrinks `logsizd` to match.
+
+The header's text fields are not on that list. They are modelled as
+`TextField`, which keeps the bytes the file held, because decoding them is not
+reversible: everything past the first null is dropped, invalid UTF-8 becomes a
+replacement character three bytes wide, and the edges are trimmed. Real files
+run into all three — some instruments pack two null-separated entries into
+`fcmnt`, and a `fres` that is not UTF-8 at all used to grow past its own slot and
+make a readable file unwritable. Read them with `text()`, or with `entries()`
+where a field holds several values.
+
+What `text()` does *not* do is guess a code page. SPC has no field naming one,
+and the bytes are in practice Windows-1252 or similar. The file itself stays
+correct, the bytes are written back untouched, but a caller who needs the
+umlaut has to decode `as_bytes()` itself for now.
 
 Two command-line examples, which are also the round trip in the small:
 
@@ -126,14 +144,14 @@ cargo run --example dump  -- spectrum.spc   # read it back
 cargo run --example dump  -- series.spc --sub 7   # one spectrum of a series
 ```
 
-## What version 0.3 reads and writes
+## What version 0.4 reads and writes
 
 | Aspect | Supported |
 | --- | --- |
 | Version byte | `0x4B` — new format, little-endian |
 | Subfiles | one or many (`TMULTI`), sharing one x axis |
 | x axis | evenly spaced, generated from `ffirst`/`flast` |
-| y values | IEEE floats (`fexp = 0x80`) |
+| y values | IEEE floats (`fexp = 0x80`) and Galactic fixed-point integers |
 | Log block | yes, raw binary and text |
 | Bit-packed date (`fdate`) | yes |
 | `subnpts = 0` shorthand | yes, and kept as the shorthand when written |
@@ -154,21 +172,19 @@ needs:
 | Explicit x values (`TXVALS`) | `Unsupported::ExplicitXValues` |
 | 16-bit y values (`TSPREC`) | `Unsupported::SixteenBitY` |
 | Multi-plane data cubes (`fwplanes > 1`) | `Unsupported::WPlanes` |
-| Galactic fixed-point y values | `Unsupported::FixedPointY` |
-| A subfile whose `subexp` contradicts `fexp` | `Unsupported::FixedPointSubfileY` |
+| A `TMULTI` subfile whose `subexp` contradicts `fexp` | `Unsupported::FixedPointSubfileY` |
 
 This narrow scope is deliberate. For measurement data, an error you can act on
 beats a spectrum that looks plausible and is quietly wrong. If you have a file
 that hits one of these, an issue with the details is the fastest way to get it
-supported — the main thing missing for the remaining variants is real-world
-sample files to validate against.
+supported — for some of these a real-world sample file is the main thing still
+missing.
 
 ## Roadmap
 
-Widening the supported set, in the order the table above lists it: explicit x
-values (`TXVALS`) and per-subfile x axes (`TXYXYS`) are the two that come up
-most in practice. Each needs a real-world sample file to validate against —
-see above.
+Widening the supported set. Next are 16-bit y values (`TSPREC`), which share the
+fixed-point arithmetic already in place and differ only in storing two bytes per
+point, then explicit x values (`TXVALS`) and per-subfile x axes (`TXYXYS`).
 
 ## Testing
 
@@ -189,17 +205,17 @@ Seven suites, with different jobs:
   garbage, and every plausible `flogoff`. Deterministic, so a failure is
   reproducible. It also holds the two properties the writer rests on: whatever
   the reader accepts, however mangled, must be writable and parse back the
-  same — run over a single-spectrum and a four-spectrum file, so that `fnsub`
-  is itself among the mutated fields; and whatever `SpcBuilder` can express —
+  same — run over a single-spectrum, a four-spectrum and a fixed-point file, so
+  that `fnsub` and the exponents are themselves among the mutated fields; and whatever `SpcBuilder` can express —
   2 000 generated spectra, point counts from 1 to 1 000, magnitudes from
   `1e-15` to `1e14`, text fields up to their exact limit — must survive a
   round trip unchanged.
 - `write.rs` — a parsed file, written back, must be **byte-identical** to the
   hand-assembled fixture. Checking the writer against the reader alone would
-  pass happily if both shared a mistake about the layout. Run over four dozen
-  named shapes — point counts, subfile counts, axis directions, log block
-  combinations, text fields at their limits — because most layout mistakes
-  survive any single geometry.
+  pass happily if both shared a mistake about the layout. Run over more than
+  fifty named shapes — point counts, subfile counts, axis directions, y
+  encodings and their exponents, log block combinations, text fields at their
+  limits — because most layout mistakes survive any single geometry.
 - `write_refuses.rs` — the writing counterpart to `unsupported.rs`: every way a
   file can fail to be written, refused for the right stated reason.
 - `build.rs` — `SpcBuilder`, checked the same way: a file built from a spectrum

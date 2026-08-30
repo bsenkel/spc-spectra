@@ -158,6 +158,35 @@ fn byte_comparison_cases() -> Vec<(&'static str, RawSpc)> {
             "multifile flag without multiple subfiles",
             reference().ftflgs(TFlags::TMULTI),
         ),
+        // Fixed-point y values: the same four bytes per point, read as scaled
+        // integers instead of floats. The exponent is the only thing that says
+        // which, so it is exercised across its range and on both signs.
+        (
+            "fixed-point y values",
+            reference().fixed_point(2, vec![536_870_912, 268_435_456, -134_217_728]),
+        ),
+        (
+            "fixed-point, exponent zero",
+            reference().fixed_point(0, vec![1, -1, 2_147_483_647, -2_147_483_648]),
+        ),
+        (
+            "fixed-point, negative exponent",
+            reference().fixed_point(-1, vec![7, -7, 0]),
+        ),
+        (
+            "fixed-point, largest exponent",
+            reference().fixed_point(127, vec![1, -1]),
+        ),
+        // With TMULTI each subfile's own exponent governs, so subfiles of one
+        // file can be scaled differently from each other.
+        (
+            "fixed-point, per-subfile exponents",
+            reference()
+                .ftflgs(TFlags::TMULTI)
+                .fixed_point(3, vec![8, 16, 24])
+                .add_fixed_spectrum(-2, vec![1, 2, 3])
+                .add_fixed_spectrum(60, vec![-4, -5, -6]),
+        ),
         // Custom axis labels: the 30 byte field, filled to different depths.
         (
             "one custom label",
@@ -177,6 +206,15 @@ fn byte_comparison_cases() -> Vec<(&'static str, RawSpc)> {
         ("empty source", reference().source("")),
         ("source fills field", reference().source("123456789")),
         ("comment fills field", reference().comment(&"x".repeat(130))),
+        // The two shapes a `String` cannot carry, both taken from real files.
+        (
+            "comment with a second null-separated entry",
+            reference().comment_bytes(b"first entry\0second entry"),
+        ),
+        (
+            "resolution that is not utf-8",
+            reference().resolution_bytes(b"4\xB0 \xB0res"),
+        ),
         // Dates, including the zero word that means "no date recorded".
         ("no date", reference().fdate(0)),
         ("leap day", reference().date(2024, 2, 29, 8, 5)),

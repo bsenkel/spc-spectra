@@ -422,7 +422,7 @@ fn a_built_file_can_be_written_to_disk_and_read_back() {
     std::fs::remove_file(&path).ok();
 
     assert_eq!(read.subfiles[0].y.len(), DEFAULT_NPTS as usize);
-    assert_eq!(read.header.fsource, "NIR probe");
+    assert_eq!(read.header.fsource.text(), "NIR probe");
     assert_eq!(read.log.unwrap().get("Channel"), Some("1"));
 }
 

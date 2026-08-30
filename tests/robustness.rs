@@ -199,11 +199,19 @@ fn a_log_offset_inside_the_data_is_refused() {
 /// Run over a multifile base as well as a single one. That is where `fnsub`
 /// becomes a mutable count the reader loops over, so it is also what exercises
 /// the bound that stops a corrupted count from becoming an allocation.
+///
+/// The fixed-point base adds the third: with it, a mutated `fexp` or `subexp`
+/// no longer merely flips the file between readable and refused, it changes how
+/// every one of the four-byte values is interpreted.
 #[test]
 fn whatever_parses_can_be_written_back_and_parsed_again() {
     for (shape, base) in [
         ("one subfile", RawSpc::new().build()),
         ("four subfiles", RawSpc::new().spectra(4).build()),
+        (
+            "fixed-point",
+            RawSpc::new().fixed_point(2, (0..64).collect()).build(),
+        ),
     ] {
         let mut rng = Rng::new();
         let mut round_tripped = 0usize;
@@ -219,14 +227,13 @@ fn whatever_parses_can_be_written_back_and_parsed_again() {
             let Ok(spc) = Spc::from_bytes(&data[..len]) else {
                 continue;
             };
-            let bytes = match spc.to_bytes() {
-                Ok(bytes) => bytes,
-                // The one documented exception: text that was not valid UTF-8
-                // is decoded lossily, and each replaced byte becomes a three
-                // byte U+FFFD, which can push the field past its slot.
-                Err(SpcError::FieldTooLong { .. }) => continue,
-                Err(e) => panic!("{shape}: a file that parsed could not be written back: {e}"),
-            };
+            // No exceptions: whatever parses must be writable. The one that
+            // used to exist here was a text field that was not valid UTF-8,
+            // which grew past its slot on the way to a `String`; the fields
+            // now keep their bytes, so it cannot arise.
+            let bytes = spc.to_bytes().unwrap_or_else(|e| {
+                panic!("{shape}: a file that parsed could not be written back: {e}")
+            });
 
             let again = Spc::from_bytes(&bytes).expect("what the writer produced must parse");
             assert_subfiles_survive(&spc, &again, shape);
@@ -409,8 +416,8 @@ impl Spectrum {
         );
         assert_eq!(read.header.ffirst, self.first, "{case}: ffirst");
         assert_eq!(read.header.flast, self.last, "{case}: flast");
-        assert_eq!(read.header.fsource, self.source, "{case}: fsource");
-        assert_eq!(read.header.fcmnt, self.comment, "{case}: fcmnt");
+        assert_eq!(read.header.fsource.text(), self.source, "{case}: fsource");
+        assert_eq!(read.header.fcmnt.text(), self.comment, "{case}: fcmnt");
         assert_eq!(
             read.subfiles[0].subheader.subscan, self.scans,
             "{case}: subscan"

@@ -2,6 +2,7 @@
 
 use crate::bytes::Cursor;
 use crate::error::{SpcError, Unsupported};
+use crate::text::TextField;
 use crate::write::Sink;
 use std::fmt;
 
@@ -14,6 +15,18 @@ pub const VERSION_OLD: u8 = 0x4D;
 
 /// The value of `fexp` that marks the y values as IEEE floats.
 pub const FEXP_IEEE_FLOAT: i8 = -128; // 0x80 read as a signed byte
+
+/// The factor a fixed-point y value is multiplied by, given its exponent.
+///
+/// Galactic stores such y values as 32-bit signed integers sharing one
+/// exponent: `y = raw · 2^(exp - 32)`. The factor is a power of two, so it only
+/// shifts the exponent of the `f64` and leaves the mantissa untouched — the
+/// widening is exact, and dividing it back out on the way to disk is exact too.
+/// Across the whole range an `i8` can hold this stays between `2^-159` and
+/// `2^95`, so it never reaches an infinity or a subnormal.
+pub(crate) fn fixed_point_scale(exp: i8) -> f64 {
+    f64::exp2(f64::from(exp) - 32.0)
+}
 
 /// Layout flags from the `ftflgs` byte.
 ///
@@ -363,17 +376,17 @@ pub struct Header {
     /// values. See [`SpcDate::from_packed`].
     pub date: Option<SpcDate>,
     /// Free-text resolution description.
-    pub fres: String,
+    pub fres: TextField<9>,
     /// Free-text source instrument description.
-    pub fsource: String,
+    pub fsource: TextField<9>,
     /// Index of the peak point, for interferograms.
     pub fpeakpt: u16,
     /// Eight spare floats reserved by the format.
     pub fspare: [f32; 8],
     /// Free-text memo field.
-    pub fcmnt: String,
+    pub fcmnt: TextField<130>,
     /// Custom axis labels, null-separated, used when `TALABS` is set.
-    pub fcatxt: [u8; 30],
+    pub fcatxt: TextField<30>,
     /// Byte offset of the log block, or zero if there is none.
     pub flogoff: u32,
     /// Bit flags recording how the data was modified after acquisition.
@@ -387,7 +400,7 @@ pub struct Header {
     /// Multiplier applied to the data by the writing software.
     pub ffactor: f32,
     /// Method file name.
-    pub fmethod: String,
+    pub fmethod: TextField<48>,
     /// z increment between subfiles.
     pub fzinc: f32,
     /// Number of w planes.
@@ -401,13 +414,6 @@ pub struct Header {
 impl Header {
     /// Size of the main header in bytes.
     pub const SIZE: usize = 512;
-
-    /// The header's fixed-width text fields: name, and width in bytes.
-    ///
-    /// Stated once so that reading, writing and validating cannot drift apart.
-    /// A value may fill its field completely; the width is what ends it.
-    const TEXT_FIELDS: [(&'static str, usize); 4] =
-        [("fres", 9), ("fsource", 9), ("fcmnt", 130), ("fmethod", 48)];
 
     /// Reads the header from the current cursor position.
     pub(crate) fn parse(c: &mut Cursor<'_>) -> Result<Self, SpcError> {
@@ -427,8 +433,8 @@ impl Header {
         let fztype = XType::from_code(c.u8(CTX)?);
         let fpost = c.u8(CTX)?;
         let fdate = c.u32(CTX)?;
-        let fres = c.text(9, CTX)?;
-        let fsource = c.text(9, CTX)?;
+        let fres = c.text_field(CTX)?;
+        let fsource = c.text_field(CTX)?;
         let fpeakpt = c.u16(CTX)?;
 
         let mut fspare = [0f32; 8];
@@ -436,9 +442,8 @@ impl Header {
             *slot = c.f32(CTX)?;
         }
 
-        let fcmnt = c.text(130, CTX)?;
-        let mut fcatxt = [0u8; 30];
-        fcatxt.copy_from_slice(c.bytes(30, CTX)?);
+        let fcmnt = c.text_field(CTX)?;
+        let fcatxt = c.text_field(CTX)?;
 
         let flogoff = c.u32(CTX)?;
         let fmods = c.u32(CTX)?;
@@ -446,7 +451,7 @@ impl Header {
         let flevel = c.u8(CTX)?;
         let fsampin = c.u16(CTX)?;
         let ffactor = c.f32(CTX)?;
-        let fmethod = c.text(48, CTX)?;
+        let fmethod = c.text_field(CTX)?;
         let fzinc = c.f32(CTX)?;
         let fwplanes = c.u32(CTX)?;
         let fwinc = c.f32(CTX)?;
@@ -500,7 +505,7 @@ impl Header {
     /// Everything after `fwtype` is the format's reserved tail and is written
     /// as nulls. A header that came from another program may have had something
     /// in there; this crate does not model it, so it cannot preserve it.
-    pub(crate) fn write(&self, s: &mut Sink, flogoff: u32) -> Result<(), SpcError> {
+    pub(crate) fn write(&self, s: &mut Sink, flogoff: u32) {
         let start = s.pos();
 
         s.u8(self.ftflgs.0);
@@ -516,28 +521,27 @@ impl Header {
         s.u8(self.fztype.code());
         s.u8(self.fpost);
         s.u32(self.fdate);
-        s.text(&self.fres, Self::TEXT_FIELDS[0].1, "fres")?;
-        s.text(&self.fsource, Self::TEXT_FIELDS[1].1, "fsource")?;
+        s.bytes(self.fres.as_bytes());
+        s.bytes(self.fsource.as_bytes());
         s.u16(self.fpeakpt);
         for v in self.fspare {
             s.f32(v);
         }
-        s.text(&self.fcmnt, Self::TEXT_FIELDS[2].1, "fcmnt")?;
-        s.bytes(&self.fcatxt);
+        s.bytes(self.fcmnt.as_bytes());
+        s.bytes(self.fcatxt.as_bytes());
         s.u32(flogoff);
         s.u32(self.fmods);
         s.u8(self.fprocs);
         s.u8(self.flevel);
         s.u16(self.fsampin);
         s.f32(self.ffactor);
-        s.text(&self.fmethod, Self::TEXT_FIELDS[3].1, "fmethod")?;
+        s.bytes(self.fmethod.as_bytes());
         s.f32(self.fzinc);
         s.u32(self.fwplanes);
         s.f32(self.fwinc);
         s.u8(self.fwtype.code());
 
         s.pad_to(start + Self::SIZE);
-        Ok(())
     }
 
     /// Rejects every file variant this version cannot decode correctly.
@@ -572,10 +576,6 @@ impl Header {
             }
             .into());
         }
-        if self.fexp != FEXP_IEEE_FLOAT {
-            return Err(Unsupported::FixedPointY { fexp: self.fexp }.into());
-        }
-
         // Contradictions that would otherwise pass silently: a zero subfile
         // count still produces points, and a non-finite endpoint poisons the
         // generated x axis with NaN without any complaint.
@@ -597,28 +597,6 @@ impl Header {
         Ok(())
     }
 
-    /// Checks that every text field still fits the slot it came from.
-    ///
-    /// Called before writing, so that an over-long comment is reported where it
-    /// was set rather than halfway through building the file. A value read from
-    /// a file normally fits by construction — with one exception worth knowing
-    /// about: text that was not valid UTF-8 is decoded lossily, and each
-    /// replaced byte becomes a three byte `U+FFFD`. Such a field can grow past
-    /// its slot, and then the file can be read but not written back.
-    pub(crate) fn validate_text_fields(&self) -> Result<(), SpcError> {
-        let values = [&self.fres, &self.fsource, &self.fcmnt, &self.fmethod];
-        for (&(field, max), value) in Self::TEXT_FIELDS.iter().zip(values) {
-            if value.len() > max {
-                return Err(SpcError::FieldTooLong {
-                    field,
-                    max,
-                    len: value.len(),
-                });
-            }
-        }
-        Ok(())
-    }
-
     /// How the z values of the subfiles relate to one another.
     ///
     /// Derived from `ftflgs`, and a reading convenience only: writing passes
@@ -636,22 +614,96 @@ impl Header {
         }
     }
 
+    /// Sets `fres`, the free-text resolution description, at most 9 bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`SpcError::FieldTooLong`] if the text does not fit. The field is left
+    /// as it was.
+    pub fn set_fres(&mut self, text: &str) -> Result<(), SpcError> {
+        self.fres = TextField::new("fres", text)?;
+        Ok(())
+    }
+
+    /// Sets `fsource`, the free-text instrument description, at most 9 bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`SpcError::FieldTooLong`] if the text does not fit. The field is left
+    /// as it was.
+    pub fn set_fsource(&mut self, text: &str) -> Result<(), SpcError> {
+        self.fsource = TextField::new("fsource", text)?;
+        Ok(())
+    }
+
+    /// Sets `fcmnt`, the free-text memo field, at most 130 bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`SpcError::FieldTooLong`] if the text does not fit. The field is left
+    /// as it was.
+    pub fn set_fcmnt(&mut self, text: &str) -> Result<(), SpcError> {
+        self.fcmnt = TextField::new("fcmnt", text)?;
+        Ok(())
+    }
+
+    /// Sets `fmethod`, the method file name, at most 48 bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`SpcError::FieldTooLong`] if the text does not fit. The field is left
+    /// as it was.
+    pub fn set_fmethod(&mut self, text: &str) -> Result<(), SpcError> {
+        self.fmethod = TextField::new("fmethod", text)?;
+        Ok(())
+    }
+
+    /// Sets `fcatxt`, the custom axis labels, from x, y and z in that order.
+    ///
+    /// The labels are stored null-separated in one 30 byte field, so each one
+    /// costs its own length plus a separator. Labels that do not fit are
+    /// refused rather than dropped — unlike [`SpcBuilder::custom_axis_labels`],
+    /// which is assembling a new file and can still say what went in.
+    ///
+    /// [`TFlags::TALABS`] is *not* set here. The flag is part of what the file
+    /// said about itself and this crate passes it through as found, so a caller
+    /// who wants these labels honoured sets it deliberately.
+    ///
+    /// [`SpcBuilder::custom_axis_labels`]: crate::SpcBuilder::custom_axis_labels
+    ///
+    /// # Errors
+    ///
+    /// [`SpcError::FieldTooLong`] if the labels and their separators need more
+    /// than 30 bytes. The field is left as it was.
+    pub fn set_fcatxt(&mut self, labels: &[&str]) -> Result<(), SpcError> {
+        let mut raw = [0u8; 30];
+        let mut at = 0;
+        for label in labels {
+            let bytes = label.as_bytes();
+            // The separator is what makes the next label readable, so it counts
+            // against the width even for the last one.
+            let needed = at + bytes.len() + 1;
+            if needed > raw.len() {
+                return Err(SpcError::FieldTooLong {
+                    field: "fcatxt",
+                    max: raw.len(),
+                    len: needed,
+                });
+            }
+            raw[at..at + bytes.len()].copy_from_slice(bytes);
+            at = needed;
+        }
+        self.fcatxt = TextField::from_bytes(raw);
+        Ok(())
+    }
+
     /// The custom axis labels from `fcatxt`, split at null bytes.
     ///
     /// The format stores x, y and z labels in that order. Only meaningful when
     /// [`TFlags::TALABS`] is set.
+    #[must_use]
     pub fn custom_axis_labels(&self) -> Vec<String> {
-        let mut labels: Vec<String> = self
-            .fcatxt
-            .split(|&b| b == 0)
-            .map(crate::bytes::decode_text)
-            .collect();
-        // The field is null-padded, so drop the empty tail but keep any blank
-        // label that sits between two filled ones.
-        while labels.last().is_some_and(|s| s.is_empty()) {
-            labels.pop();
-        }
-        labels
+        self.fcatxt.entries()
     }
 
     /// Label for the x axis, honouring `TALABS` when present.

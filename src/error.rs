@@ -125,17 +125,22 @@ pub enum Unsupported {
     ExplicitXValues,
     /// `fexp` is not `0x80`, so the y values are Galactic fixed-point numbers
     /// scaled by this shared exponent.
+    ///
+    /// No longer produced as of 0.4.0, which reads and writes these files. The
+    /// variant stays so that existing `match` arms keep compiling.
     FixedPointY {
         /// The shared scaling exponent read from the header.
         fexp: i8,
     },
-    /// A subfile declares its own exponent (`subexp`) that contradicts the
-    /// file-wide `fexp`, so that subfile's y values are encoded differently
-    /// from what the main header advertises.
+    /// `TMULTI` is set, so the subfile's own `subexp` governs its y values and
+    /// says fixed-point, while the file-wide `fexp` announces IEEE floats.
     ///
-    /// Kept separate from [`Self::FixedPointY`] because the two fields live in
-    /// different headers, and knowing which one disagreed is what tells you
-    /// where to look.
+    /// Two fields then disagree about how the same four bytes are read, and
+    /// nothing else in the file settles it. Picking a winner would be a guess,
+    /// and the wrong guess yields a plausible-looking, entirely wrong spectrum.
+    ///
+    /// Without `TMULTI` this cannot arise: `subexp` is not consulted at all,
+    /// so whatever it holds passes through untouched.
     FixedPointSubfileY {
         /// The subfile's own exponent.
         subexp: i8,

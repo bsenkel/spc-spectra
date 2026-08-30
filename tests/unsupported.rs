@@ -66,12 +66,12 @@ fn multi_plane_data_cubes_are_refused() {
 }
 
 #[test]
-fn fixed_point_y_values_are_refused_and_report_the_exponent() {
+fn fixed_point_y_values_are_no_longer_refused() {
+    // Kept as a test rather than deleted: `Unsupported::FixedPointY` still
+    // exists so that older `match` arms compile, and nothing may produce it.
     for fexp in [-3i8, 0, 12, 127] {
-        assert_rejected(
-            SpcBuilder::new().fexp(fexp),
-            Unsupported::FixedPointY { fexp },
-        );
+        Spc::from_bytes(&SpcBuilder::new().fexp(fexp).build())
+            .unwrap_or_else(|e| panic!("fexp {fexp} must be read, not refused: {e}"));
     }
 }
 
@@ -82,19 +82,33 @@ fn fixed_point_y_values_are_refused_and_report_the_exponent() {
 /// avoid, so it gets its own set of tests.
 #[test]
 fn a_subfile_exponent_contradicting_the_header_is_refused() {
-    for subexp in [-3i8, 12, 127, -1] {
+    // With TMULTI the subheader's exponent governs, so a subexp announcing
+    // fixed-point while fexp announces floats leaves two fields disagreeing
+    // about how the same four bytes are read. Nothing in the file settles it.
+    for subexp in [-3i8, 0, 12, 127, -1] {
         assert_rejected(
-            SpcBuilder::new().subexp(subexp),
+            SpcBuilder::new().ftflgs(TFlags::TMULTI).subexp(subexp),
             Unsupported::FixedPointSubfileY { subexp, fexp: -128 },
         );
     }
 }
 
 #[test]
-fn a_zero_subfile_exponent_is_refused_rather_than_assumed_unset() {
-    // 0 is a legal fixed-point exponent, not an obvious "not filled in".
+fn a_zero_subfile_exponent_is_never_read_as_an_unset_field() {
+    // 0 is a legal fixed-point exponent, not a "not filled in" marker — one
+    // other reader treats it as the latter and falls back to fexp.
+    //
+    // Without TMULTI the field is not consulted at all, so the file reads as
+    // the floats fexp announces, and subexp travels through untouched.
+    let spc = Spc::from_bytes(&SpcBuilder::new().subexp(0).build())
+        .expect("without TMULTI, subexp says nothing about the encoding");
+    assert_eq!(spc.subfiles[0].subheader.subexp, 0);
+    assert_eq!(spc.subfiles[0].y.len(), common::DEFAULT_NPTS as usize);
+
+    // With TMULTI it governs, and then 0 means fixed-point with scale 2^-32 —
+    // which contradicts the float fexp rather than deferring to it.
     assert_rejected(
-        SpcBuilder::new().subexp(0),
+        SpcBuilder::new().ftflgs(TFlags::TMULTI).subexp(0),
         Unsupported::FixedPointSubfileY {
             subexp: 0,
             fexp: -128,
@@ -137,8 +151,7 @@ fn every_rejection_explains_itself() {
         SpcBuilder::new().ftflgs(TFlags::TXYXYS),
         SpcBuilder::new().ftflgs(TFlags::TXVALS),
         SpcBuilder::new().ftflgs(TFlags::TSPREC),
-        SpcBuilder::new().fexp(4),
-        SpcBuilder::new().subexp(4),
+        SpcBuilder::new().ftflgs(TFlags::TMULTI).subexp(4),
         SpcBuilder::new().fwplanes(2),
     ];
     for builder in cases {

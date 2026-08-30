@@ -21,17 +21,88 @@ fn refusal(spc: &Spc) -> SpcError {
         .expect_err("this file should not have been writable")
 }
 
+/// A fixed-point file this crate read always divides back out exactly, so
+/// these two only arise once a caller has computed new y values. Both destroy
+/// the value outright, which is what separates them from ordinary rounding.
+fn fixed_point_file() -> Spc {
+    // Exponent 2: a step of 2^-30, and a largest value just under 2.
+    Spc::from_bytes(&RawSpc::new().fixed_point(2, vec![1, 2, 3]).build())
+        .expect("the fixed-point fixture must parse")
+}
+
 #[test]
-fn a_text_field_that_no_longer_fits_is_named() {
-    let mut spc = valid();
-    spc.header.fcmnt = "x".repeat(131);
+fn a_y_value_too_large_for_the_fixed_point_scale_is_named() {
+    let mut spc = fixed_point_file();
+    spc.subfiles[0].y[1] = 4.0; // the scale tops out just under 2
 
     match refusal(&spc) {
-        SpcError::FieldTooLong { field, max, len } => {
-            assert_eq!((field, max, len), ("fcmnt", 130, 131));
+        SpcError::ValueNotRepresentable { index, value } => {
+            assert_eq!(index, 1);
+            assert_eq!(value, 4.0);
         }
-        other => panic!("expected FieldTooLong, got {other:?}"),
+        other => panic!("expected ValueNotRepresentable, got {other:?}"),
     }
+}
+
+#[test]
+fn a_y_value_that_the_fixed_point_scale_would_erase_is_named() {
+    let mut spc = fixed_point_file();
+    // Below half a step. Rounding would silently make this a zero, which is
+    // not a rounded measurement but the absence of one.
+    spc.subfiles[0].y[2] = 1e-12;
+
+    match refusal(&spc) {
+        SpcError::ValueNotRepresentable { index, value } => {
+            assert_eq!(index, 2);
+            assert_eq!(value, 1e-12);
+        }
+        other => panic!("expected ValueNotRepresentable, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_edges_of_the_fixed_point_range_are_where_they_belong() {
+    // Exponent 0 gives a step of 2^-32, so i32::MIN lands exactly on -0.5 and
+    // one step further is out. The range check compares against that same
+    // bound, which is precisely where an off-by-one would let a value through
+    // that the cast then saturates, or refuse one the reader would hand back.
+    let scale = f64::exp2(-32.0);
+    let mut spc = Spc::from_bytes(&RawSpc::new().fixed_point(0, vec![0, 0]).build())
+        .expect("the fixed-point fixture must parse");
+
+    spc.subfiles[0].y[0] = f64::from(i32::MIN) * scale;
+    spc.subfiles[0].y[1] = f64::from(i32::MAX) * scale;
+    let bytes = spc
+        .to_bytes()
+        .expect("both extremes are representable and must be written");
+    let back = Spc::from_bytes(&bytes).expect("and must read back");
+    assert_eq!(back.subfiles[0].y[0], f64::from(i32::MIN) * scale);
+    assert_eq!(back.subfiles[0].y[1], f64::from(i32::MAX) * scale);
+
+    // One step beyond either end is not.
+    for (index, value) in [
+        (0usize, (f64::from(i32::MIN) - 1.0) * scale),
+        (1, (f64::from(i32::MAX) + 1.0) * scale),
+    ] {
+        let mut spc = spc.clone();
+        spc.subfiles[0].y[index] = value;
+        match refusal(&spc) {
+            SpcError::ValueNotRepresentable { index: i, .. } => assert_eq!(i, index),
+            other => panic!("expected ValueNotRepresentable, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn rounding_to_the_nearest_fixed_point_step_is_not_a_refusal() {
+    // Losing precision is inherent to the format, exactly as narrowing to f32
+    // is on the float path. Only total loss is refused.
+    let mut spc = fixed_point_file();
+    spc.subfiles[0].y[0] = 0.1234567890123;
+
+    let bytes = spc.to_bytes().expect("mere rounding must not be refused");
+    let back = Spc::from_bytes(&bytes).expect("and must read back");
+    assert!((back.subfiles[0].y[0] - 0.1234567890123).abs() < 1e-9);
 }
 
 #[test]
@@ -163,9 +234,15 @@ fn header_variants_the_reader_refuses_cannot_be_written_either() {
             Unsupported::WPlanes { fwplanes: 4 },
         ),
         (
-            "fexp",
-            |s| s.header.fexp = 3,
-            Unsupported::FixedPointY { fexp: 3 },
+            "subexp contradicting fexp under TMULTI",
+            |s| {
+                s.header.ftflgs.0 |= TFlags::TMULTI;
+                s.subfiles[0].subheader.subexp = 3;
+            },
+            Unsupported::FixedPointSubfileY {
+                subexp: 3,
+                fexp: -128,
+            },
         ),
     ];
 
@@ -198,7 +275,7 @@ fn a_refused_write_leaves_no_file_behind_a_partial_one() {
     std::fs::write(&path, b"previous contents").unwrap();
 
     let mut spc = valid();
-    spc.header.fcmnt = "x".repeat(200);
+    spc.header.flast = f64::NAN;
     assert!(spc.to_path(&path).is_err());
 
     let after = std::fs::read(&path).unwrap();

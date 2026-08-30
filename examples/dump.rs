@@ -41,13 +41,13 @@ fn main() -> std::process::ExitCode {
     println!("File          {path}");
     println!("Version       {:#04X}", h.fversn);
     println!("Technique     {}", h.fexper);
-    println!("Source        {}", show(&h.fsource));
-    println!("Resolution    {}", show(&h.fres));
+    println!("Source        {}", show(&h.fsource.text()));
+    println!("Resolution    {}", show(&h.fres.text()));
     println!(
         "Date          {}",
         h.date.map_or("-".into(), |d| d.to_string())
     );
-    println!("Comment       {}", show(&h.fcmnt));
+    println!("Comment       {}", show(&h.fcmnt.text()));
     println!("Flags         {:#010b}", h.ftflgs.0);
     println!("Points        {}", spc.subfiles[0].len());
     println!("Subfiles      {}", spc.subfiles.len());

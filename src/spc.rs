@@ -2,7 +2,7 @@
 
 use crate::bytes::Cursor;
 use crate::error::SpcError;
-use crate::header::Header;
+use crate::header::{FEXP_IEEE_FLOAT, Header, fixed_point_scale};
 use crate::log::LogBlock;
 use crate::subheader::SubHeader;
 use crate::write::Sink;
@@ -120,9 +120,21 @@ impl Spc {
                 });
             }
 
+            // How those four bytes per point are to be read is the one thing
+            // `fexp` and `subexp` say; which of the two speaks is
+            // `effective_exponent`. Either way it is four bytes, so nothing
+            // above this line depends on the answer.
+            let exp = subheader.effective_exponent(&header);
             let mut y = Vec::with_capacity(npts);
-            for _ in 0..npts {
-                y.push(f64::from(c.f32("the y values")?));
+            if exp == FEXP_IEEE_FLOAT {
+                for _ in 0..npts {
+                    y.push(f64::from(c.f32("the y values")?));
+                }
+            } else {
+                let scale = fixed_point_scale(exp);
+                for _ in 0..npts {
+                    y.push(f64::from(c.i32("the y values")?) * scale);
+                }
             }
             let x = generate_x(header.ffirst, header.flast, npts);
 
@@ -184,17 +196,21 @@ impl Spc {
     ///   `logdsks` area of the log block, are written as nulls;
     /// - log entries separated by nulls come back separated by newlines, since
     ///   that is how [`LogBlock::text`] presents them;
-    /// - y values are stored as 32 bit floats, so the [`f64`] values handed
-    ///   over are narrowed, exactly as reading widened them.
+    /// - y values pass back through the file's own encoding, so a float file
+    ///   narrows the [`f64`] values to 32 bits exactly as reading widened them,
+    ///   and a fixed-point one rounds them to its scale.
+    ///
+    /// The header's text fields are *not* on that list: they are kept as the
+    /// bytes the file held, so whatever was in them comes back unchanged. See
+    /// [`TextField`](crate::TextField).
     ///
     /// # Errors
     ///
     /// Besides the variants [`Spc::from_bytes`] can return, this reports
-    /// [`SpcError::FieldTooLong`] for a text field that does not fit its slot,
-    /// [`SpcError::ValueNotRepresentable`] for a finite y value with no `f32`
-    /// equivalent, and [`SpcError::NotWritable`] when the parts contradict each
-    /// other — a point count that disagrees with the y values, or an x axis
-    /// that is not the evenly spaced one `ffirst`/`flast` describe.
+    /// [`SpcError::ValueNotRepresentable`] for a y value the file's encoding
+    /// cannot carry, and [`SpcError::NotWritable`] when the parts contradict
+    /// each other — a point count that disagrees with the y values, or an x
+    /// axis that is not the evenly spaced one `ffirst`/`flast` describe.
     ///
     /// # Example
     ///
@@ -219,11 +235,21 @@ impl Spc {
         };
 
         let mut s = Sink::with_capacity(data_end);
-        self.header.write(&mut s, flogoff)?;
+        self.header.write(&mut s, flogoff);
         for subfile in subfiles {
             subfile.subheader.write(&mut s);
-            for &v in &subfile.y {
-                s.f32(v as f32);
+            let exp = subfile.subheader.effective_exponent(&self.header);
+            if exp == FEXP_IEEE_FLOAT {
+                for &v in &subfile.y {
+                    s.f32(v as f32);
+                }
+            } else {
+                let scale = fixed_point_scale(exp);
+                for &v in &subfile.y {
+                    // `validate_subfile` has already established that this
+                    // lands inside i32, so the cast cannot saturate here.
+                    s.i32((v / scale).round() as i32);
+                }
             }
         }
         debug_assert!(flogoff == 0 || s.pos() == flogoff as usize);
@@ -254,7 +280,6 @@ impl Spc {
     /// out and discover it later.
     pub(crate) fn writable_subfiles(&self) -> Result<&[Subfile], SpcError> {
         self.header.validate()?;
-        self.header.validate_text_fields()?;
 
         if self.subfiles.is_empty() {
             return Err(SpcError::NotWritable {
@@ -319,12 +344,32 @@ impl Spc {
             });
         }
 
-        // Narrowing to f32 always costs precision, and that is inherent to the
-        // format. Turning a finite number into an infinity is not: that value
-        // would not come back at all.
-        for (index, &value) in subfile.y.iter().enumerate() {
-            if value.is_finite() && !(value as f32).is_finite() {
-                return Err(SpcError::ValueNotRepresentable { index, value });
+        // Losing precision is inherent to the format and is accepted, whether
+        // that is narrowing to f32 or rounding to the nearest step of a
+        // fixed-point scale. What is refused is a value that would not come
+        // back at all.
+        let exp = subfile.subheader.effective_exponent(&self.header);
+        if exp == FEXP_IEEE_FLOAT {
+            for (index, &value) in subfile.y.iter().enumerate() {
+                if value.is_finite() && !(value as f32).is_finite() {
+                    return Err(SpcError::ValueNotRepresentable { index, value });
+                }
+            }
+        } else {
+            let scale = fixed_point_scale(exp);
+            for (index, &value) in subfile.y.iter().enumerate() {
+                let raw = (value / scale).round();
+                // An `as` cast saturates silently, which would store a
+                // different number than the caller asked for without saying so.
+                let out_of_range =
+                    !raw.is_finite() || raw < f64::from(i32::MIN) || raw > f64::from(i32::MAX);
+                // Fixed-point precision is absolute rather than relative: a
+                // value below half a step does not round, it disappears. That
+                // is a different loss from the rounding above and is refused.
+                let collapsed = raw == 0.0 && value != 0.0;
+                if out_of_range || collapsed {
+                    return Err(SpcError::ValueNotRepresentable { index, value });
+                }
             }
         }
 

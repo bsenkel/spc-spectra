@@ -26,6 +26,44 @@ fn reads_the_same_file_from_disk() {
 }
 
 #[test]
+fn fixed_point_y_values_decode_to_exact_multiples_of_their_scale() {
+    // exponent 2 means a step of 2^-30, so these integers are 0.5, 0.25, 1.75
+    // and -0.125 — the values a spectrum would actually hold.
+    let spc =
+        parse(&SpcBuilder::new().fixed_point(2, vec![536_870_912, 268_435_456, -134_217_728]));
+
+    assert_eq!(spc.header.fexp, 2);
+    assert_eq!(spc.subfiles[0].y, vec![0.5, 0.25, -0.125]);
+}
+
+#[test]
+fn without_the_multifile_flag_the_subfile_exponent_is_not_consulted() {
+    // fexp says fixed-point with exponent 2; subexp says something else
+    // entirely. Without TMULTI the header governs and subexp is only carried.
+    let spc = parse(
+        &SpcBuilder::new()
+            .fixed_point(2, vec![536_870_912])
+            .subexp(60),
+    );
+
+    assert_eq!(spc.subfiles[0].y, vec![0.5]);
+    assert_eq!(spc.subfiles[0].subheader.subexp, 60);
+}
+
+#[test]
+fn with_the_multifile_flag_each_subfile_uses_its_own_exponent() {
+    let spc = parse(
+        &SpcBuilder::new()
+            .ftflgs(TFlags::TMULTI)
+            .fixed_point(0, vec![1])
+            .add_fixed_spectrum(1, vec![1]),
+    );
+
+    // Same raw integer, exponents one apart: the second must come out doubled.
+    assert_eq!(spc.subfiles[1].y[0], spc.subfiles[0].y[0] * 2.0);
+}
+
+#[test]
 fn a_multifile_record_yields_every_subfile() {
     let spc = parse(&SpcBuilder::new().spectra(3));
 
@@ -123,10 +161,112 @@ fn reads_every_header_field_back() {
     assert_eq!(h.fexper, Technique::Nir);
     assert_eq!(h.fxtype, XType::Nanometers);
     assert_eq!(h.fytype, YType::Absorbance);
-    assert_eq!(h.fres, "2nm");
-    assert_eq!(h.fsource, "NIR probe");
-    assert_eq!(h.fcmnt, "synthetic test spectrum");
+    assert_eq!(h.fres.text(), "2nm");
+    assert_eq!(h.fsource.text(), "NIR probe");
+    assert_eq!(h.fcmnt.text(), "synthetic test spectrum");
     assert_eq!(h.ffactor, 1.0);
+}
+
+/// Some instruments put several null-separated entries into `fcmnt`, a field
+/// the format defines as holding one value. Reading stops at the first null, so
+/// the rest would be lost if the field were kept as a decoded string.
+#[test]
+fn a_header_text_field_keeps_what_follows_its_first_null() {
+    let raw = b"first entry\0second entry";
+    let spc = parse(&SpcBuilder::new().comment_bytes(raw));
+
+    assert_eq!(spc.header.fcmnt.text(), "first entry");
+    assert_eq!(spc.header.fcmnt.entries(), ["first entry", "second entry"]);
+    assert_eq!(&spc.header.fcmnt.as_bytes()[..raw.len()], raw);
+}
+
+/// A field that is not valid UTF-8 used to grow on the way to a `String` — one
+/// byte became a three byte replacement character — until it no longer fitted
+/// the slot it came out of. The file could then be read but not written.
+#[test]
+fn a_header_text_field_that_is_not_utf8_can_still_be_written() {
+    // Two bytes that are not UTF-8 in a nine byte field: seven bytes in,
+    // eleven out. Exactly the shape that made one file in the reference corpus
+    // unwritable.
+    let raw = b"4\xB0 \xB0res";
+    let spc = parse(&SpcBuilder::new().resolution_bytes(raw));
+
+    assert!(
+        spc.header.fres.text().len() > 9,
+        "the decoded text must overflow the nine byte slot, or this proves nothing"
+    );
+    spc.to_bytes()
+        .expect("a field this crate read must be one it can write");
+}
+
+/// The setters exist so that the field's name and width cannot be given
+/// wrongly. Each one must therefore report its own name.
+#[test]
+fn a_header_setter_names_the_field_it_refuses() {
+    #[track_caller]
+    fn refuses_as(result: Result<(), SpcError>, name: &str) {
+        match result {
+            Err(SpcError::FieldTooLong { field, .. }) => assert_eq!(field, name),
+            other => panic!("{name} is over-long but gave {other:?}"),
+        }
+    }
+
+    let mut h = parse(&SpcBuilder::new()).header;
+    refuses_as(h.set_fres(&"x".repeat(10)), "fres");
+    refuses_as(h.set_fsource(&"x".repeat(10)), "fsource");
+    refuses_as(h.set_fcmnt(&"x".repeat(131)), "fcmnt");
+    refuses_as(h.set_fmethod(&"x".repeat(49)), "fmethod");
+    refuses_as(h.set_fcatxt(&["x".repeat(30).as_str()]), "fcatxt");
+}
+
+/// A refused setter must not have half-written the field on its way out.
+#[test]
+fn a_refused_header_setter_leaves_the_field_as_it_was() {
+    let mut spc = parse(&SpcBuilder::new());
+    let before = spc.header.fcmnt;
+
+    assert!(spc.header.set_fcmnt(&"x".repeat(131)).is_err());
+    assert_eq!(spc.header.fcmnt, before, "the field was written anyway");
+}
+
+#[test]
+fn text_set_through_a_header_setter_survives_a_round_trip() {
+    let mut spc = parse(&SpcBuilder::new());
+    spc.header.set_fcmnt("Messung A, geglaettet").unwrap();
+    spc.header.set_fsource("probe 2").unwrap();
+
+    let again = Spc::from_bytes(&spc.to_bytes().unwrap()).unwrap();
+    assert_eq!(again.header.fcmnt.text(), "Messung A, geglaettet");
+    assert_eq!(again.header.fsource.text(), "probe 2");
+}
+
+/// `fcatxt` is the one field holding several values, so its setter takes them
+/// as a list and lays them out the way the reader splits them again.
+#[test]
+fn axis_labels_set_on_a_header_come_back_as_they_went_in() {
+    let mut spc = parse(&SpcBuilder::new());
+    spc.header.set_fcatxt(&["nm", "AU", "s"]).unwrap();
+
+    assert_eq!(&spc.header.fcatxt.as_bytes()[..8], b"nm\0AU\0s\0");
+    assert_eq!(spc.header.custom_axis_labels(), ["nm", "AU", "s"]);
+
+    // The flag stays a matter for the caller: the labels are stored either way.
+    assert!(!spc.header.ftflgs.contains(TFlags::TALABS));
+}
+
+/// The guarantee itself, on both shapes at once: what came in comes out.
+#[test]
+fn header_text_fields_come_back_byte_for_byte() {
+    let original = SpcBuilder::new()
+        .comment_bytes(b"first\0second")
+        .resolution_bytes(b"4\xB0 \xB0res")
+        .no_log()
+        .build();
+
+    let spc = Spc::from_bytes(&original).expect("the fixture must parse");
+    let written = spc.to_bytes().expect("and must be writable");
+
+    assert_eq!(written, original, "a byte of the header changed");
 }
 
 #[test]

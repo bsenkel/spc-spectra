@@ -13,6 +13,61 @@ anyone.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-30
+
+### Added
+
+- **Galactic fixed-point y values.** Files whose `fexp` is not `0x80` store
+  their y values as 32-bit integers sharing one exponent
+  (`y = raw · 2^(fexp - 32)`); they are now read and written like any other.
+  The scale is a power of two, so the round trip is exact in both directions,
+  unlike the float path, where narrowing to `f32` rounds. Which exponent
+  governs is stated rather than assumed: without `TMULTI` the file-wide `fexp`,
+  with `TMULTI` each subfile's own `subexp`. A `subexp` of `0` is a legal
+  exponent and never means "not filled in".
+
+- **The header's text fields now round-trip byte for byte.** Two things real
+  instrument files do that this crate could not reproduce: an `fcmnt` holding
+  two null-separated entries lost the second one, and an `fres` that was not
+  UTF-8 grew past its own nine byte slot on the way to a `String`, so the file
+  could be read but not written back. The fields keep their bytes now, and
+  decode on demand.
+
+- `Header::set_fres` and its four siblings set a text field without the caller
+  restating its name and width, the read, adjust, write back path. Each
+  refuses over-long text under its own field name and leaves the field
+  unchanged. `set_fcatxt` takes the axis labels as a list; it does not set
+  `TFlags::TALABS`, which stays the caller's decision.
+
+### Changed
+
+- **Breaking:** `fres`, `fsource`, `fcmnt`, `fmethod` and `fcatxt` change from
+  `String` and `[u8; 30]` to the new `TextField<N>`. **Migration:** add
+  `.text()` where a `String` was expected. `Display` is implemented, so
+  printing a field is unchanged, and `Header::custom_axis_labels` keeps
+  working. `TextField` also offers `entries()` for a field holding several
+  null-separated values, `as_bytes()` and `is_empty()`.
+- `SpcError::FieldTooLong` no longer comes out of `Spc::to_bytes`. It is
+  reported where the field is built — `TextField::new`, `Header::set_*`,
+  `SpcBuilder::build`, so an over-long value can never reach a header at all.
+  The variant itself is unchanged and still names the field.
+- `Unsupported::FixedPointSubfileY` names a narrower case: `TMULTI` is set, so
+  `subexp` governs and says fixed-point, while `fexp` announces floats. Nothing
+  in the file settles which is right, so it is refused rather than decided.
+  Without `TMULTI` a `subexp` that differs from `fexp` is no longer an error,
+  nobody reads it, and it travels through unchanged.
+- Writing a y value that a fixed-point scale cannot hold is refused with
+  `SpcError::ValueNotRepresentable`, for either way the value would be lost
+  outright: it exceeds the range of `i32`, or it is under half a step and would
+  quantise to zero. Ordinary rounding to the nearest step is not refused, just
+  as narrowing to `f32` is not.
+
+### Notes
+
+- `Unsupported::FixedPointY` is no longer produced. The variant stays so that
+  existing `match` arms keep compiling.
+- Reading a fixed-point file needs no new API: y values remain `f64`.
+
 ## [0.3.0] - 2026-08-28
 
 ### Added
@@ -128,7 +183,8 @@ separated by newlines, and text that was not valid UTF-8 is decoded lossily. See
   named `Unsupported` value rather than parsed on a guess. No dependencies, no
   `unsafe`.
 
-[Unreleased]: https://github.com/bsenkel/spc-spectra/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/bsenkel/spc-spectra/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/bsenkel/spc-spectra/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bsenkel/spc-spectra/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/bsenkel/spc-spectra/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/bsenkel/spc-spectra/compare/v0.1.0...v0.2.0

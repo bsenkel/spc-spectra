@@ -2,7 +2,7 @@
 
 use crate::bytes::Cursor;
 use crate::error::{SpcError, Unsupported};
-use crate::header::{FEXP_IEEE_FLOAT, Header};
+use crate::header::{FEXP_IEEE_FLOAT, Header, TFlags};
 use crate::write::Sink;
 
 /// Flags from the `subflgs` byte of a subheader.
@@ -102,28 +102,49 @@ impl SubHeader {
         s.pad_to(start + Self::SIZE);
     }
 
-    /// Rejects a subfile whose own exponent contradicts the file-wide one.
+    /// The exponent that actually governs this subfile's y values.
     ///
-    /// `subexp` may legitimately repeat `fexp`, or be `0x80` to mean "IEEE
-    /// floats regardless". Anything else says this subfile is encoded
-    /// differently from what the main header advertises — and since this
-    /// version handles only IEEE floats, carrying on would produce a spectrum
-    /// that looks entirely plausible and is entirely wrong.
+    /// Without `TMULTI` the file-wide `fexp` governs and `subexp` is not
+    /// consulted at all; with `TMULTI` the subfile's own `subexp` does. That is
+    /// the rule the Python, Julia and R readers implement, and the R one cites
+    /// the format documentation for it.
     ///
-    /// This is strict on purpose. A `subexp` of `0` is a valid fixed-point
-    /// exponent, not an obvious "field not filled in" marker, so it is refused
-    /// rather than waved through. If some instrument turns out to zero the
-    /// field as a matter of course, that is worth finding out from a loud error
-    /// on a known file rather than from silently shifted numbers later.
+    /// A value of `0x80` means IEEE floats. Every other value is a fixed-point
+    /// exponent, including `0` — which is why this crate does not treat `0` as
+    /// an unfilled field the way one other reader does.
+    pub(crate) const fn effective_exponent(&self, header: &Header) -> i8 {
+        if header.ftflgs.contains(TFlags::TMULTI) {
+            self.subexp
+        } else {
+            header.fexp
+        }
+    }
+
+    /// Rejects a subfile whose own exponent contradicts the file-wide one in a
+    /// way that cannot be resolved from what the file states.
+    ///
+    /// Only one combination is genuinely ambiguous: `TMULTI` is set, so
+    /// `subexp` governs and says fixed-point, while `fexp` announces floats for
+    /// the file. Two fields then disagree about how four bytes are to be read,
+    /// and nothing in the file settles it. Another reader resolves this in
+    /// favour of the header and says so in a message; this one refuses, because
+    /// picking a winner would be a guess and the wrong guess produces a
+    /// spectrum that looks entirely plausible and is entirely wrong.
+    ///
+    /// Without `TMULTI` there is nothing to check: `subexp` is not read, so
+    /// whatever it holds is an observation that travels through unchanged.
     pub(crate) fn validate(&self, header: &Header) -> Result<(), SpcError> {
-        if self.subexp == FEXP_IEEE_FLOAT || self.subexp == header.fexp {
-            return Ok(());
+        let contradicts = header.ftflgs.contains(TFlags::TMULTI)
+            && header.fexp == FEXP_IEEE_FLOAT
+            && self.subexp != FEXP_IEEE_FLOAT;
+        if contradicts {
+            return Err(Unsupported::FixedPointSubfileY {
+                subexp: self.subexp,
+                fexp: header.fexp,
+            }
+            .into());
         }
-        Err(Unsupported::FixedPointSubfileY {
-            subexp: self.subexp,
-            fexp: header.fexp,
-        }
-        .into())
+        Ok(())
     }
 
     /// Number of points in this subfile.

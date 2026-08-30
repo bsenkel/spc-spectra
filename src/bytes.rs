@@ -5,6 +5,7 @@
 //! of panicking, so a truncated or corrupt file can never bring down a caller.
 
 use crate::error::SpcError;
+use crate::text::TextField;
 
 /// A read cursor over an in-memory SPC file.
 pub(crate) struct Cursor<'a> {
@@ -86,17 +87,22 @@ impl<'a> Cursor<'a> {
     read_number!(i8, i8);
     read_number!(u16, u16);
     read_number!(u32, u32);
+    read_number!(i32, i32);
     read_number!(f32, f32);
     read_number!(f64, f64);
 
-    /// Reads a fixed-width text field and decodes it into a `String`.
+    /// Reads a fixed-width text field, keeping its bytes as they stand.
     ///
-    /// SPC text fields are null-padded and, depending on the writing software,
-    /// are not necessarily valid UTF-8. Decoding is therefore lossy so that a
-    /// stray byte in a comment can never fail the whole parse.
-    pub(crate) fn text(&mut self, n: usize, context: &'static str) -> Result<String, SpcError> {
-        let raw = self.bytes(n, context)?;
-        Ok(decode_text(raw))
+    /// The decoding happens in [`TextField`], on demand, so that nothing the
+    /// file held is lost between reading and writing it back.
+    pub(crate) fn text_field<const N: usize>(
+        &mut self,
+        context: &'static str,
+    ) -> Result<TextField<N>, SpcError> {
+        let raw = self.bytes(N, context)?;
+        let mut field = [0u8; N];
+        field.copy_from_slice(raw);
+        Ok(TextField::from_bytes(field))
     }
 }
 
@@ -137,6 +143,15 @@ mod tests {
         assert_eq!(c.u16("t").unwrap(), 0x0201);
         assert_eq!(c.u16("t").unwrap(), 0x0403);
         assert_eq!(c.remaining(), 0);
+    }
+
+    #[test]
+    fn reads_a_negative_32_bit_integer() {
+        // Fixed-point y values are signed, so the sign bit has to survive the
+        // read rather than turning a trough into a very large peak.
+        let data = (-2i32).to_le_bytes();
+        let mut c = Cursor::new(&data);
+        assert_eq!(c.i32("the y values").unwrap(), -2);
     }
 
     #[test]

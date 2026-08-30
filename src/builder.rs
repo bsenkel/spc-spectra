@@ -7,6 +7,7 @@ use crate::header::{
 use crate::log::LogBlock;
 use crate::spc::{Spc, Subfile};
 use crate::subheader::{SubFlags, SubHeader};
+use crate::text::TextField;
 
 /// One spectrum and the z value that places it in the series.
 #[derive(Debug, Clone)]
@@ -407,12 +408,12 @@ impl SpcBuilder {
             fpost: 0,
             fdate: self.date.map_or(0, SpcDate::to_packed),
             date: self.date,
-            fres: self.fres,
-            fsource: self.fsource,
+            fres: TextField::new("fres", &self.fres)?,
+            fsource: TextField::new("fsource", &self.fsource)?,
             fpeakpt: 0,
             fspare: [0.0; 8],
-            fcmnt: self.fcmnt,
-            fcatxt: self.fcatxt,
+            fcmnt: TextField::new("fcmnt", &self.fcmnt)?,
+            fcatxt: TextField::from_bytes(self.fcatxt),
             // A byte offset into a file that does not exist yet; the writer
             // fills it in from the geometry it actually produces.
             flogoff: 0,
@@ -421,7 +422,7 @@ impl SpcBuilder {
             flevel: 0,
             fsampin: 0,
             ffactor: 1.0,
-            fmethod: self.fmethod,
+            fmethod: TextField::new("fmethod", &self.fmethod)?,
             fzinc: 0.0,
             fwplanes: 0,
             fwinc: 0.0,
