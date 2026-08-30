@@ -3,7 +3,6 @@
 [![CI](https://github.com/bsenkel/spc-spectra/actions/workflows/ci.yml/badge.svg)](https://github.com/bsenkel/spc-spectra/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/spc-spectra.svg)](https://crates.io/crates/spc-spectra)
 [![docs.rs](https://img.shields.io/docsrs/spc-spectra)](https://docs.rs/spc-spectra)
-[![License](https://img.shields.io/crates/l/spc-spectra.svg)](LICENSE-MIT)
 
 A Rust reader and writer for **SPC spectroscopy files** — the binary format
 introduced by Galactic Industries and carried on in Thermo's GRAMS software. It
@@ -29,6 +28,8 @@ fills the gap in Rust.
 [dependencies]
 spc-spectra = "0.4"
 ```
+
+Rust 1.85 or newer. Tested on Linux, macOS and Windows, in debug and release.
 
 ## Usage
 
@@ -57,7 +58,6 @@ if let Some(log) = &spc.log {
         println!("channel {channel}");
     }
 }
-# Ok::<(), spc_spectra::SpcError>(())
 ```
 
 ## Writing
@@ -79,7 +79,6 @@ SpcBuilder::new(900.0, 1700.0, y)   // first x, last x, the data
     .log_text("Channel=1\nIntegration=100ms")
     .build()?
     .to_path("spectrum.spc")?;
-# Ok::<(), spc_spectra::SpcError>(())
 ```
 
 The x axis is not stored in an SPC file — every reader regenerates it from the
@@ -100,8 +99,9 @@ SpcBuilder::series(900.0, 1700.0, spectra)
     .z_spacing(ZSpacing::Uneven)   // and that they are not evenly spaced
     .build()?
     .to_path("series.spc")?;
-# Ok::<(), spc_spectra::SpcError>(())
 ```
+
+## What survives a round trip
 
 Reading and writing cover exactly the same ground, on purpose: **the writer runs
 the reader's own validation before it writes a byte**, so a file this crate
@@ -110,8 +110,8 @@ it refuses to write.
 
 Every parsed field survives a round trip, and a file this crate wrote is
 byte-stable. That includes the log block's own bookkeeping: instruments reserve
-the block in whole allocation units and pad the rest with nulls — 4096 bytes for
-153 bytes of text is typical — and both the reservation size and the padding are
+the block in whole allocation units and pad the rest with nulls, 4096 bytes for
+153 bytes of text is typical and both the reservation size and the padding are
 written back as they were.
 
 Byte-for-byte fidelity to a *foreign* file is still not promised, because the
@@ -122,21 +122,25 @@ reader does not model everything a file may hold:
 - log entries separated by nulls come back separated by newlines, and trailing
   whitespace in the log text is trimmed, which shrinks `logsizd` to match.
 
-The header's text fields are not on that list. They are modelled as
-`TextField`, which keeps the bytes the file held, because decoding them is not
-reversible: everything past the first null is dropped, invalid UTF-8 becomes a
-replacement character three bytes wide, and the edges are trimmed. Real files
-run into all three — some instruments pack two null-separated entries into
-`fcmnt`, and a `fres` that is not UTF-8 at all used to grow past its own slot and
-make a readable file unwritable. Read them with `text()`, or with `entries()`
-where a field holds several values.
+## Header text fields
+
+The header's text fields are reproduced exactly, and that took a deliberate
+design. They are modelled as `TextField`, which keeps the bytes the file held,
+because decoding them is not reversible: everything past the first null is
+dropped, invalid UTF-8 becomes a replacement character three bytes wide, and the
+edges are trimmed. Real files run into all three. Some instruments pack two
+null-separated entries into `fcmnt`, and a `fres` that is not UTF-8 at all used
+to grow past its own slot and make a readable file unwritable. Read them with
+`text()`, or with `entries()` where a field holds several values.
 
 What `text()` does *not* do is guess a code page. SPC has no field naming one,
 and the bytes are in practice Windows-1252 or similar. The file itself stays
-correct, the bytes are written back untouched, but a caller who needs the
-umlaut has to decode `as_bytes()` itself for now.
+correct, the bytes are written back untouched, but for example a caller who 
+needs an umlaut has to decode `as_bytes()` itself for now.
 
-Two command-line examples, which are also the round trip in the small:
+## Command-line examples
+
+Two examples, which are also the round trip in the small:
 
 ```sh
 cargo run --example write -- spectrum.spc   # write a synthetic spectrum
@@ -144,7 +148,37 @@ cargo run --example dump  -- spectrum.spc   # read it back
 cargo run --example dump  -- series.spc --sub 7   # one spectrum of a series
 ```
 
+## How an SPC file is laid out
+
+The new format, `fversn = 0x4B`, which is the one this crate reads. The old
+`0x4D` uses a 256 byte header, and `TSPREC` stores two bytes per point instead
+of four; neither is supported yet.
+
+```text
+offset  0  +---------------------------------------------+
+           | Main header - 512 bytes                     |
+           | ftflgs . fexp . fnpts . ffirst/flast        |
+      512  +---------------------------------------------+  --+
+           | Subheader - 32 bytes                        |    |
+           | subexp . subtime . subnpts                  |    | once per
+      544  +---------------------------------------------+    | subfile
+           | y values - 4 bytes per point                |    |
+           | IEEE float, or fixed-point i32              |    |
+           +---------------------------------------------+  --+
+  flogoff  +---------------------------------------------+
+           | Log block - optional                        |
+           | 64-byte header . binary area . text         |
+           +---------------------------------------------+
+
+the x axis is stored nowhere: it is regenerated from ffirst,
+flast and the point count
+```
+
 ## What version 0.4 reads and writes
+
+An orientation, not a description of the format — for that, see the layout
+above. The list of refusals below it *is* complete: it names every reason this
+version can turn a file away.
 
 | Aspect | Supported |
 | --- | --- |
@@ -153,8 +187,6 @@ cargo run --example dump  -- series.spc --sub 7   # one spectrum of a series
 | x axis | evenly spaced, generated from `ffirst`/`flast` |
 | y values | IEEE floats (`fexp = 0x80`) and Galactic fixed-point integers |
 | Log block | yes, raw binary and text |
-| Bit-packed date (`fdate`) | yes |
-| `subnpts = 0` shorthand | yes, and kept as the shorthand when written |
 | Per-subfile `subtime`, `subindx`, `subscan` | yes |
 | z spacing (`TORDRD`, `TRANDM`) | read and written, via `ZSpacing` |
 
@@ -177,64 +209,49 @@ needs:
 This narrow scope is deliberate. For measurement data, an error you can act on
 beats a spectrum that looks plausible and is quietly wrong. If you have a file
 that hits one of these, an issue with the details is the fastest way to get it
-supported — for some of these a real-world sample file is the main thing still
+supported. For some of these a real-world sample file is the main thing still
 missing.
 
-## Roadmap
-
-Widening the supported set. Next are 16-bit y values (`TSPREC`), which share the
-fixed-point arithmetic already in place and differ only in storing two bytes per
-point, then explicit x values (`TXVALS`) and per-subfile x axes (`TXYXYS`).
+The list shrinks from the top. `TSPREC` is the nearest, since it shares the
+fixed-point arithmetic already in place and differs only in storing two bytes
+per point; `TXVALS` and `TXYXYS` need more, and `TXYXYS` needs a real sample
+file most of all.
 
 ## Testing
 
-The test suite builds SPC files byte by byte in memory
-(`tests/common/mod.rs`), so it needs no sample data of uncertain provenance:
+The suite builds SPC files byte by byte in memory (`tests/common/mod.rs`), so it
+needs no sample data of uncertain provenance:
 
 ```sh
 cargo test
 ```
 
-Seven suites, with different jobs:
+Four properties carry most of the weight:
 
-- `roundtrip.rs` — parses a known-good file and checks every field matches.
-- `unsupported.rs` — each refused variant is refused for the *right* stated
-  reason, so an unreadable file never masquerades as a readable one.
-- `robustness.rs` — the parser never panics. Exhaustive single-bit flips
-  through the header and subheader, 100 000 random mutations, arbitrary
-  garbage, and every plausible `flogoff`. Deterministic, so a failure is
-  reproducible. It also holds the two properties the writer rests on: whatever
-  the reader accepts, however mangled, must be writable and parse back the
-  same — run over a single-spectrum, a four-spectrum and a fixed-point file, so
-  that `fnsub` and the exponents are themselves among the mutated fields; and whatever `SpcBuilder` can express —
-  2 000 generated spectra, point counts from 1 to 1 000, magnitudes from
-  `1e-15` to `1e14`, text fields up to their exact limit — must survive a
-  round trip unchanged.
-- `write.rs` — a parsed file, written back, must be **byte-identical** to the
-  hand-assembled fixture. Checking the writer against the reader alone would
-  pass happily if both shared a mistake about the layout. Run over more than
-  fifty named shapes — point counts, subfile counts, axis directions, y
+- **The writer is checked against hand-assembled bytes, not against the
+  reader** — both sharing a mistake about the layout would pass any round trip.
+  Over fifty named shapes: point counts, subfile counts, axis directions, y
   encodings and their exponents, log block combinations, text fields at their
-  limits — because most layout mistakes survive any single geometry.
-- `write_refuses.rs` — the writing counterpart to `unsupported.rs`: every way a
-  file can fail to be written, refused for the right stated reason.
-- `build.rs` — `SpcBuilder`, checked the same way: a file built from a spectrum
-  and its metadata must come out byte-identical to the fixture, for a single
-  spectrum and for a timed series alike.
-- `real_files.rs` — the one check the others cannot make. A reader and a writer
-  that share a mistake about the format agree with each other perfectly; only a
-  file from foreign software settles it. Instrument exports cannot live in this
-  repository, so the suite reads from a directory you point it at and skips when
-  you do not:
+  limits.
+- **The parser never panics.** Exhaustive single-bit flips through the header
+  and subheader, 100 000 random mutations, arbitrary garbage and every plausible
+  `flogoff` — deterministic, so a failure is reproducible.
+- **Whatever the reader accepts must be writable**, and must parse back the
+  same. 20 000 mutations each over a single-spectrum, a four-spectrum and a
+  fixed-point file, so that `fnsub` and the y exponents are themselves among the
+  mutated fields.
+- **Every refusal names the right reason**, on reading and on writing alike, so
+  an unreadable file never masquerades as a readable one.
 
-  ```sh
-  SPC_SAMPLE_DIR=/path/to/spc/files cargo test --test real_files
-  ```
+Each suite states its own job at the top of its file. One is optional: the
+cross-check against foreign instrument files, which cannot live in this
+repository, and which is the only test the others cannot stand in for.
 
-  Each file must parse or name the feature it needs, every modelled field must
-  survive a round trip, and every byte that differs from the original must fall
-  in a region this README lists above. Failures name byte offsets and field
-  names, never field contents.
+```sh
+SPC_SAMPLE_DIR=/path/to/spc/files cargo test --test real_files
+```
+
+Failures there name byte offsets and field names, never field contents.
 
 ## Related work
 
