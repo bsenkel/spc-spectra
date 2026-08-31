@@ -91,15 +91,18 @@ pub enum SpcError {
         detail: &'static str,
     },
 
-    /// A finite y value that does not survive the narrowing to `f32`.
+    /// A finite y value that the file's own y encoding cannot carry.
     ///
-    /// The format stores y values as 32 bit floats, so some precision is always
-    /// lost. A finite number that turns into an infinity is a different matter:
-    /// the value written would not be the value handed over.
+    /// Some precision is always lost, and that is not an error: the format
+    /// rounds by design. This is about a value that would be destroyed
+    /// outright, which happens in three ways. On the float path, a finite
+    /// number that turns into an infinity when narrowed to `f32`. On the
+    /// fixed-point path, a value beyond the range of `i32` at the file's
+    /// scale, or one smaller than half a step, which would quantise to zero.
     ValueNotRepresentable {
         /// Index of the offending point.
         index: usize,
-        /// The value that has no `f32` equivalent.
+        /// The value the encoding cannot carry.
         value: f64,
     },
 }
@@ -219,7 +222,8 @@ impl fmt::Display for SpcError {
             Self::NotWritable { detail } => write!(f, "cannot be written: {detail}"),
             Self::ValueNotRepresentable { index, value } => write!(
                 f,
-                "y value {value} at index {index} is finite but has no 32-bit float equivalent"
+                "y value {value} at index {index} is finite, but this file's y \
+                 encoding cannot carry it"
             ),
         }
     }

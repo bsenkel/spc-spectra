@@ -101,9 +101,9 @@
 //!
 //! Everything else is rejected with a specific [`Unsupported`] value rather
 //! than parsed on a guess — and, since the writer runs the same checks, rather
-//! than written on a guess either: big-endian files (`0x4C`), the old format (`0x4D`),
-//! `TXYXYS`, explicit x values (`TXVALS`), 16-bit y values
-//! (`TSPREC`) and multi-plane data cubes (`fwplanes > 1`).
+//! than written on a guess either: big-endian files (`0x4C`), the old format
+//! (`0x4D`), per-subfile x axes (`TXYXYS`), explicit x values (`TXVALS`),
+//! 16-bit y values (`TSPREC`) and multi-plane data cubes (`fwplanes > 1`).
 //!
 //! That choice is the point of the crate. For measurement data, a loud error is
 //! far more useful than a spectrum that looks plausible and is quietly wrong,

@@ -13,6 +13,13 @@ anyone.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-31
+
+### Fixed
+
+- **`SpcError::ValueNotRepresentable` renders a different message**, because
+  the old one blamed `f32` even where the governing exponent was the limit.
+
 ## [0.4.0] - 2026-08-30
 
 ### Added
@@ -183,7 +190,8 @@ separated by newlines, and text that was not valid UTF-8 is decoded lossily. See
   named `Unsupported` value rather than parsed on a guess. No dependencies, no
   `unsafe`.
 
-[Unreleased]: https://github.com/bsenkel/spc-spectra/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/bsenkel/spc-spectra/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/bsenkel/spc-spectra/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/bsenkel/spc-spectra/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bsenkel/spc-spectra/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/bsenkel/spc-spectra/compare/v0.2.0...v0.2.1

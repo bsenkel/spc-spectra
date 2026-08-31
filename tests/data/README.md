@@ -17,8 +17,8 @@ Only add files whose licensing you have actually checked:
   committing.
 
 `Cargo.toml` currently excludes this directory from the published package via
-`exclude = ["tests/data/*"]`. Revisit that line once real files are committed
-and their licensing is settled.
+`exclude = ["tests/data/*", ".github/"]`. Revisit that line once real files are
+committed and their licensing is settled.
 
 ## Verifying against real files
 
