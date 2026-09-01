@@ -9,7 +9,7 @@ readme = "README.md"
 repository = "https://github.com/bsenkel/spc-spectra"
 keywords = ["spc", "spectroscopy", "nir", "raman", "ftir"]
 categories = ["science", "parser-implementations", "encoding"]
-exclude = ["tests/data/*", ".github/"]
+exclude = ["tests/data/*", ".github/", "AGENTS.md"]
 
 [dependencies]
 
