@@ -36,10 +36,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
-      - name: Install stable
-        run: |
-          rustup update stable --no-self-update
-          rustup default stable
+      - uses: dtolnay/rust-toolchain@stable
       # Also compiles the examples and runs the doc tests, so a stale snippet
       # in the documentation fails here. The real_files suite needs
       # SPC_SAMPLE_DIR and stays inert without it: no sample file belongs in
@@ -56,11 +53,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install stable
-        run: |
-          rustup update stable --no-self-update
-          rustup default stable
-          rustup component add clippy rustfmt
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - name: Format
         run: cargo fmt --check
       # -D warnings covers the rustc lints too, which is what makes the
@@ -83,9 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install 1.85
-        run: rustup toolchain install 1.85 --profile minimal --no-self-update
+      - uses: dtolnay/rust-toolchain@1.85.0
       # The crate has no dependencies, so this tests the source against the
       # oldest compiler it claims, with nothing else in the way.
       - name: Test
-        run: cargo +1.85 test
+        run: cargo test
