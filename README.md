@@ -264,7 +264,7 @@ Failures there name byte offsets and field names, never field contents.
 
 ## License
 
-Licensed under the MIT license ([LICENSE-MIT](LICENSE-MIT)).
+Licensed under the MIT license ([LICENSE](LICENSE)).
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in this work by you shall be licensed as above, without any
