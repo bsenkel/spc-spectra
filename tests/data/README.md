@@ -31,8 +31,8 @@ SPC_SAMPLE_DIR=/path/to/spc/files cargo test --test real_files
 
 Each file must parse or name the feature it needs, every modelled field must
 survive a round trip, and every byte that differs from the original must fall in
-a region the README documents. Failures name byte offsets and field names, never
-field contents.
+a region `Spc::to_bytes` documents. Failures name byte offsets and field names,
+never field contents.
 
 To look at a single file:
 

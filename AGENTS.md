@@ -2,7 +2,8 @@
 
 `spc-spectra` reads and writes SPC spectroscopy files (Thermo Galactic /
 GRAMS): one crate, no dependencies, no `unsafe`, MSRV 1.85 on edition 2024.
-`README.md` carries the format, the byte layout and the supported variants.
+`README.md` carries the supported variants, the crate documentation in
+`src/lib.rs` the format and the byte layout.
 
 Its purpose is to refuse rather than guess. For measurement data an error beats
 a spectrum that looks plausible and is quietly wrong, so an unsupported variant

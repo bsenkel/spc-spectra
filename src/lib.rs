@@ -85,6 +85,32 @@
 //! everything past the first null and mangles what is not UTF-8. See
 //! [`TextField`].
 //!
+//! # How an SPC file is laid out
+//!
+//! The new format, `fversn = 0x4B`, which is the one this crate reads. The old
+//! `0x4D` uses a 256 byte header, and `TSPREC` stores two bytes per point
+//! instead of four; neither is supported yet.
+//!
+//! ```text
+//! offset  0  +---------------------------------------------+
+//!            | Main header - 512 bytes                     |
+//!            | ftflgs . fexp . fnpts . ffirst/flast        |
+//!       512  +---------------------------------------------+  --+
+//!            | Subheader - 32 bytes                        |    |
+//!            | subexp . subtime . subnpts                  |    | once per
+//!       544  +---------------------------------------------+    | subfile
+//!            | y values - 4 bytes per point                |    |
+//!            | IEEE float, or fixed-point i32              |    |
+//!            +---------------------------------------------+  --+
+//!   flogoff  +---------------------------------------------+
+//!            | Log block - optional                        |
+//!            | 64-byte header . binary area . text         |
+//!            +---------------------------------------------+
+//!
+//! the x axis is stored nowhere: it is regenerated from ffirst,
+//! flast and the point count
+//! ```
+//!
 //! # What this version reads and writes
 //!
 //! Version 0.4 deliberately covers only the most common variants, which is what

@@ -173,7 +173,7 @@ fn every_difference_from_the_original_bytes_is_one_this_crate_documents() {
     }
 }
 
-/// The regions the README lists as not reproduced byte for byte.
+/// The regions `Spc::to_bytes` documents as not reproduced byte for byte.
 ///
 /// Takes the parsed file rather than a bare offset, because a multifile record
 /// carries one unmodelled subheader tail per subfile and their positions depend
