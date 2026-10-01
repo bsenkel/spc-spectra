@@ -21,6 +21,13 @@ anyone.
   Such a date is now `SpcError::NotWritable`, as is one a reader would hand
   back as no date at all: a month of 0, a year before 1900.
 
+- **A `subnpts` that contradicts `fnpts` is refused.** Without `TXYXYS` every
+  subfile shares the x axis `ffirst` and `flast` describe, but the reader took
+  a nonzero `subnpts` as the point count and spread that many points over the
+  same range, which is a different axis. Such a file is now
+  `SpcError::MalformedHeader`, on reading and on writing. `subnpts = 0` and
+  `subnpts = fnpts` read as before.
+
 ## [0.4.1] - 2026-08-31
 
 ### Fixed

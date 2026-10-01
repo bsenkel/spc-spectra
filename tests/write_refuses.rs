@@ -157,6 +157,19 @@ fn a_point_count_that_disagrees_with_the_data_is_refused() {
 }
 
 #[test]
+fn a_subnpts_that_contradicts_fnpts_is_refused() {
+    // The subfiles share one x axis, so a subheader with a count of its own
+    // makes a file this crate would refuse to read back.
+    let mut spc = valid();
+    spc.subfiles[0].subheader.subnpts = DEFAULT_NPTS - 1;
+
+    match refusal(&spc) {
+        SpcError::MalformedHeader { detail } => assert!(detail.contains("subnpts"), "{detail}"),
+        other => panic!("expected MalformedHeader, got {other:?}"),
+    }
+}
+
+#[test]
 fn an_empty_spectrum_is_refused() {
     let mut spc = valid();
     spc.subfiles[0].x.clear();

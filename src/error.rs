@@ -60,7 +60,9 @@ pub enum SpcError {
     /// Covers a subfile count of zero and non-finite x endpoints (`NaN` or
     /// infinity in `ffirst`/`flast`), either of which would otherwise pass
     /// silently — a zero count still yields points, and a `NaN` endpoint
-    /// poisons the generated x axis without any complaint.
+    /// poisons the generated x axis without any complaint. Also covers a
+    /// subheader whose `subnpts` is neither zero nor `fnpts`: the subfiles
+    /// share one x axis, so a second point count would respace it.
     MalformedHeader {
         /// Which field was wrong, and what it held.
         detail: &'static str,

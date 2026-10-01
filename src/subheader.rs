@@ -120,10 +120,10 @@ impl SubHeader {
         }
     }
 
-    /// Rejects a subfile whose own exponent contradicts the file-wide one in a
-    /// way that cannot be resolved from what the file states.
+    /// Rejects a subfile that contradicts the main header in a way that cannot
+    /// be resolved from what the file states.
     ///
-    /// Only one combination is genuinely ambiguous: `TMULTI` is set, so
+    /// The exponent is ambiguous in one combination: `TMULTI` is set, so
     /// `subexp` governs and says fixed-point, while `fexp` announces floats for
     /// the file. Two fields then disagree about how four bytes are to be read,
     /// and nothing in the file settles it. Another reader resolves this in
@@ -133,6 +133,14 @@ impl SubHeader {
     ///
     /// Without `TMULTI` there is nothing to check: `subexp` is not read, so
     /// whatever it holds is an observation that travels through unchanged.
+    ///
+    /// The point count is the other: a `subnpts` that is neither zero nor
+    /// `fnpts`. A count of its own belongs to a subfile with an x axis of its
+    /// own, which is `TXYXYS`. Without that flag every subfile shares the axis
+    /// `ffirst` and `flast` describe, so a second count would spread a
+    /// different number of points over the same range. The other readers split
+    /// here: the Python one, its Julia port and the JavaScript one take
+    /// `fnpts`, the R one refuses. None of them takes `subnpts`.
     pub(crate) fn validate(&self, header: &Header) -> Result<(), SpcError> {
         let contradicts = header.ftflgs.contains(TFlags::TMULTI)
             && header.fexp == FEXP_IEEE_FLOAT
@@ -144,6 +152,14 @@ impl SubHeader {
             }
             .into());
         }
+        if !header.ftflgs.contains(TFlags::TXYXYS)
+            && self.subnpts != 0
+            && self.subnpts != header.fnpts
+        {
+            return Err(SpcError::MalformedHeader {
+                detail: "subnpts contradicts fnpts, and without TXYXYS the subfiles share one x axis",
+            });
+        }
         Ok(())
     }
 
@@ -151,7 +167,8 @@ impl SubHeader {
     ///
     /// A `subnpts` of zero is not an empty subfile: it is the common shorthand
     /// for "the same count as the main header", used whenever a subfile shares
-    /// the file-wide x axis — which, without `TXYXYS`, they all do.
+    /// the file-wide x axis — which, without `TXYXYS`, they all do. Any other
+    /// value is then `fnpts` itself, or the file was refused.
     pub const fn npts(&self, header: &Header) -> u32 {
         if self.subnpts == 0 {
             header.fnpts

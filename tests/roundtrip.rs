@@ -335,6 +335,20 @@ fn an_explicit_subnpts_gives_the_same_result() {
     assert_eq!(inherited.subfiles[0].y, explicit.subfiles[0].y);
 }
 
+/// Without `TXYXYS` the subfiles share one x axis, so a subheader cannot bring
+/// a point count of its own. Taking it would spread 400 points over the range
+/// the header gives for 801: a different axis that looks just as plausible.
+#[test]
+fn a_subnpts_that_contradicts_fnpts_is_refused() {
+    for subnpts in [400, DEFAULT_NPTS - 1, DEFAULT_NPTS + 1] {
+        let raw = SpcBuilder::new().subnpts(subnpts).build();
+        assert!(
+            matches!(Spc::from_bytes(&raw), Err(SpcError::MalformedHeader { .. })),
+            "subnpts = {subnpts} against fnpts = {DEFAULT_NPTS} should be refused"
+        );
+    }
+}
+
 #[test]
 fn dates_round_trip_through_the_packed_field() {
     for (y, mo, d, h, mi) in [

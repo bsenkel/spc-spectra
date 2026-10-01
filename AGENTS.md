@@ -62,7 +62,8 @@ cargo run --example dump -- spectrum.spc [--sub N]
   call the writer: a reader and a writer sharing a layout mistake round-trip
   happily, and that comparison is the only thing that catches it.
 - **Two fields do not mean what they look like.** `subnpts == 0` means "as many
-  points as `fnpts`", not an empty subfile. An exponent of `0x80` means IEEE
+  points as `fnpts`", not an empty subfile; any other value has to be `fnpts`
+  itself or the file is refused. An exponent of `0x80` means IEEE
   floats and every other value, `0` included, is a real fixed-point exponent —
   which of `subexp` and `fexp` governs is `SubHeader::effective_exponent`
   (`src/subheader.rs:115`).

@@ -144,6 +144,9 @@
 //! - Under `TMULTI` the subheader's `subexp` governs the y values, so it must
 //!   not announce fixed-point while the file-wide `fexp` announces floats.
 //!   Without `TMULTI` the field is not consulted and cannot contradict.
+//! - A subheader's `subnpts` must be zero, the shorthand for `fnpts`, or
+//!   `fnpts` itself. The subfiles share one x axis, so a different count would
+//!   spread a different number of points over the same range.
 //! - The y values must end at or before `flogoff`, since the log block follows
 //!   the data. A point count that would overrun it means one of the two fields
 //!   is wrong, and there is no way to tell which.
