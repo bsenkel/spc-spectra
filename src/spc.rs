@@ -192,10 +192,12 @@ impl Spc {
     /// *foreign* file is not promised, because the reader does not model
     /// everything a file may contain:
     ///
-    /// - the reserved tails of the main header and the subheader, and the
-    ///   `logdsks` area of the log block, are written as nulls;
-    /// - log entries separated by nulls come back separated by newlines, since
-    ///   that is how [`LogBlock::text`] presents them;
+    /// - the reserved tails of the main header, the subheader and the log block
+    ///   header are written as nulls;
+    /// - the log text is written as [`LogBlock::text`] presents it: entries
+    ///   separated by nulls come back separated by newlines, invalid UTF-8 is
+    ///   replaced, and trailing whitespace is trimmed, which shrinks `logsizd`
+    ///   to match;
     /// - y values pass back through the file's own encoding, so a float file
     ///   narrows the [`f64`] values to 32 bits exactly as reading widened them,
     ///   and a fixed-point one rounds them to its scale.

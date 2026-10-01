@@ -77,9 +77,9 @@
 //! Every field this crate parses survives a read/write round trip, and a file
 //! it wrote is byte-stable. Byte-for-byte fidelity to a *foreign* file is not
 //! promised, because the reader does not model everything a file may hold: the
-//! reserved tails of the header and subheader and the log block's `logdsks`
-//! area are written as nulls, log entries separated by nulls come back
-//! separated by newlines, and trailing whitespace in the log text is trimmed.
+//! reserved tails of the header, the subheader and the log block header are
+//! written as nulls, log entries separated by nulls come back separated by
+//! newlines, and trailing whitespace in the log text is trimmed.
 //! See [`Spc::to_bytes`] for the full list. The header's text fields are not on
 //! it: they are kept as the bytes the file held, since decoding them loses
 //! everything past the first null and mangles what is not UTF-8. See
