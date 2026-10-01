@@ -104,6 +104,83 @@ pub struct Sub {
     pub subexp: Option<i8>,
 }
 
+/// The header and subheader fields an ordinary export leaves at zero.
+///
+/// Zero in every fixture would mean that two of them could trade places in the
+/// reader and the writer alike without a single byte comparison noticing.
+/// [`Self::distinct`] is what gives each of them a value to be told apart by.
+#[derive(Clone)]
+pub struct ExtraFields {
+    pub fztype: u8,
+    pub fpost: u8,
+    pub fpeakpt: u16,
+    pub fspare: [f32; 8],
+    pub fmods: u32,
+    pub fprocs: u8,
+    pub flevel: u8,
+    pub fsampin: u16,
+    pub ffactor: f32,
+    pub fmethod: Vec<u8>,
+    pub fzinc: f32,
+    pub fwinc: f32,
+    pub fwtype: u8,
+    pub subflgs: u8,
+    pub subnext: f32,
+    pub subnois: f32,
+    pub subwlevel: f32,
+}
+
+impl Default for ExtraFields {
+    fn default() -> Self {
+        Self {
+            fztype: 0,
+            fpost: 0,
+            fpeakpt: 0,
+            fspare: [0.0; 8],
+            fmods: 0,
+            fprocs: 0,
+            flevel: 0,
+            fsampin: 0,
+            ffactor: 1.0,
+            fmethod: Vec::new(),
+            fzinc: 0.0,
+            fwinc: 0.0,
+            fwtype: 0,
+            subflgs: 0,
+            subnext: 0.0,
+            subnois: 0.0,
+            subwlevel: 0.0,
+        }
+    }
+}
+
+impl ExtraFields {
+    /// Every field nonzero, unlike every other, and with bytes that differ
+    /// among themselves, so that neither a swapped pair nor a reversed byte
+    /// order reproduces the value.
+    pub fn distinct() -> Self {
+        Self {
+            fztype: 4, // seconds; the fixture's x is 3, its y is 2
+            fpost: 0x5A,
+            fpeakpt: 0x0102,
+            fspare: [1.5, -2.25, 3.125, 4.5, -5.75, 6.0625, 7.25, 8.875],
+            fmods: 0x0102_0304,
+            fprocs: 0x11,
+            flevel: 0x22,
+            fsampin: 0x0304,
+            ffactor: 2.5,
+            fmethod: b"method.mth".to_vec(),
+            fzinc: 0.75,
+            fwinc: 1.25,
+            fwtype: 20, // temperature in C
+            subflgs: 0x81,
+            subnext: 9.5,
+            subnois: 0.015625,
+            subwlevel: 12.25,
+        }
+    }
+}
+
 /// Fluent builder for a byte-exact SPC file.
 pub struct SpcBuilder {
     ftflgs: u8,
@@ -135,6 +212,7 @@ pub struct SpcBuilder {
     log_dsks: u32,
     /// Total block size including trailing null padding.
     log_pad_to: Option<u32>,
+    extra: ExtraFields,
 }
 
 impl Default for SpcBuilder {
@@ -186,6 +264,7 @@ impl SpcBuilder {
             log_sizm: None,
             log_dsks: 0,
             log_pad_to: None,
+            extra: ExtraFields::default(),
         }
     }
 
@@ -291,6 +370,13 @@ impl SpcBuilder {
         raw.resize(30, 0);
         self.fcatxt = raw;
         self.ftflgs |= TFlags::TALABS;
+        self
+    }
+
+    /// Sets the fields the other knobs leave at zero. The subheader ones go
+    /// into every subfile alike.
+    pub fn extra_fields(mut self, v: ExtraFields) -> Self {
+        self.extra = v;
         self
     }
 
@@ -470,28 +556,30 @@ impl SpcBuilder {
         out.extend_from_slice(&fnsub.to_le_bytes());
         out.push(self.fxtype);
         out.push(self.fytype);
-        out.push(0); // fztype
-        out.push(0); // fpost
+        out.push(self.extra.fztype);
+        out.push(self.extra.fpost);
         out.extend_from_slice(&self.fdate.to_le_bytes());
         push_field(&mut out, &self.fres, 9);
         push_field(&mut out, &self.fsource, 9);
-        out.extend_from_slice(&0u16.to_le_bytes()); // fpeakpt
-        out.extend_from_slice(&[0u8; 32]); // fspare[8]
+        out.extend_from_slice(&self.extra.fpeakpt.to_le_bytes());
+        for spare in self.extra.fspare {
+            out.extend_from_slice(&spare.to_le_bytes());
+        }
         push_field(&mut out, &self.fcmnt, 130);
         let mut catxt = self.fcatxt.clone();
         catxt.resize(30, 0);
         out.extend_from_slice(&catxt);
         out.extend_from_slice(&flogoff.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // fmods
-        out.push(0); // fprocs
-        out.push(0); // flevel
-        out.extend_from_slice(&0u16.to_le_bytes()); // fsampin
-        out.extend_from_slice(&1.0f32.to_le_bytes()); // ffactor
-        push_field(&mut out, b"", 48); // fmethod
-        out.extend_from_slice(&0.0f32.to_le_bytes()); // fzinc
+        out.extend_from_slice(&self.extra.fmods.to_le_bytes());
+        out.push(self.extra.fprocs);
+        out.push(self.extra.flevel);
+        out.extend_from_slice(&self.extra.fsampin.to_le_bytes());
+        out.extend_from_slice(&self.extra.ffactor.to_le_bytes());
+        push_field(&mut out, &self.extra.fmethod, 48);
+        out.extend_from_slice(&self.extra.fzinc.to_le_bytes());
         out.extend_from_slice(&self.fwplanes.to_le_bytes()); // fwplanes
-        out.extend_from_slice(&0.0f32.to_le_bytes()); // fwinc
-        out.push(0); // fwtype
+        out.extend_from_slice(&self.extra.fwinc.to_le_bytes());
+        out.push(self.extra.fwtype);
         out.resize(Header::SIZE, 0); // reserved tail
         assert_eq!(
             out.len(),
@@ -502,15 +590,15 @@ impl SpcBuilder {
         // --- one 32 byte subheader and its y values per subfile ---
         for sub in &self.subs {
             let sub_start = out.len();
-            out.push(0); // subflgs
+            out.push(self.extra.subflgs);
             out.push(sub.subexp.or(self.subexp).unwrap_or(self.fexp) as u8); // subexp
             out.extend_from_slice(&sub.subindx.to_le_bytes());
             out.extend_from_slice(&sub.subtime.to_le_bytes());
-            out.extend_from_slice(&0.0f32.to_le_bytes()); // subnext
-            out.extend_from_slice(&0.0f32.to_le_bytes()); // subnois
+            out.extend_from_slice(&self.extra.subnext.to_le_bytes());
+            out.extend_from_slice(&self.extra.subnois.to_le_bytes());
             out.extend_from_slice(&self.subnpts.to_le_bytes());
             out.extend_from_slice(&self.subscan.to_le_bytes());
-            out.extend_from_slice(&0.0f32.to_le_bytes()); // subwlevel
+            out.extend_from_slice(&self.extra.subwlevel.to_le_bytes());
             out.resize(sub_start + SubHeader::SIZE, 0);
 
             sub.y.write_to(&mut out);

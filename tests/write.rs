@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{DEFAULT_FIRST, DEFAULT_LAST, DEFAULT_NPTS, SpcBuilder as RawSpc};
+use common::{DEFAULT_FIRST, DEFAULT_LAST, DEFAULT_NPTS, ExtraFields, SpcBuilder as RawSpc};
 use spc_spectra::{Spc, SpcDate, TFlags, Technique, XType, YType};
 
 /// The default fixture, minus the trailing newline in the log text.
@@ -222,6 +222,19 @@ fn byte_comparison_cases() -> Vec<(&'static str, RawSpc)> {
         // Unit codes this crate has no name for must survive as raw bytes.
         ("unknown unit codes", reference().axis_types(200, 201)),
         ("unknown technique", reference().fexper(99)),
+        // The fields an ordinary export leaves at zero, each with a value of
+        // its own: two of them written in each other's place show up only here.
+        (
+            "seldom-used fields",
+            reference().extra_fields(ExtraFields::distinct()),
+        ),
+        (
+            "seldom-used fields in a series",
+            reference()
+                .ftflgs(TFlags::TMULTI)
+                .spectra(3)
+                .extra_fields(ExtraFields::distinct()),
+        ),
         // y values that stress the float encoding.
         (
             "extreme y values",
@@ -331,7 +344,7 @@ fn a_binary_log_area_is_reproduced_exactly() {
 
 #[test]
 fn every_parsed_header_field_survives_the_round_trip() {
-    let before = parse(&reference().build());
+    let before = parse(&reference().extra_fields(ExtraFields::distinct()).build());
     let after = parse(&before.to_bytes().unwrap());
     let (a, b) = (&before.header, &after.header);
 
@@ -346,29 +359,48 @@ fn every_parsed_header_field_survives_the_round_trip() {
     assert_eq!(a.fxtype, b.fxtype);
     assert_eq!(a.fytype, b.fytype);
     assert_eq!(a.fztype, b.fztype);
+    assert_eq!(a.fpost, b.fpost);
     assert_eq!(a.fdate, b.fdate);
     assert_eq!(a.date, b.date);
     assert_eq!(a.fres, b.fres);
     assert_eq!(a.fsource, b.fsource);
+    assert_eq!(a.fpeakpt, b.fpeakpt);
+    assert_eq!(a.fspare, b.fspare);
     assert_eq!(a.fcmnt, b.fcmnt);
     assert_eq!(a.fcatxt, b.fcatxt);
     assert_eq!(a.flogoff, b.flogoff);
+    assert_eq!(a.fmods, b.fmods);
+    assert_eq!(a.fprocs, b.fprocs);
+    assert_eq!(a.flevel, b.flevel);
+    assert_eq!(a.fsampin, b.fsampin);
     assert_eq!(a.ffactor, b.ffactor);
     assert_eq!(a.fmethod, b.fmethod);
+    assert_eq!(a.fzinc, b.fzinc);
     assert_eq!(a.fwplanes, b.fwplanes);
+    assert_eq!(a.fwinc, b.fwinc);
+    assert_eq!(a.fwtype, b.fwtype);
 }
 
 #[test]
 fn the_subheader_survives_the_round_trip() {
-    let before = parse(&reference().subnpts(DEFAULT_NPTS).build());
+    let before = parse(
+        &reference()
+            .subnpts(DEFAULT_NPTS)
+            .extra_fields(ExtraFields::distinct())
+            .build(),
+    );
     let after = parse(&before.to_bytes().unwrap());
     let (a, b) = (&before.subfiles[0].subheader, &after.subfiles[0].subheader);
 
     assert_eq!(a.subflgs, b.subflgs);
     assert_eq!(a.subexp, b.subexp);
     assert_eq!(a.subindx, b.subindx);
+    assert_eq!(a.subtime, b.subtime);
+    assert_eq!(a.subnext, b.subnext);
+    assert_eq!(a.subnois, b.subnois);
     assert_eq!(a.subnpts, b.subnpts);
     assert_eq!(a.subscan, b.subscan);
+    assert_eq!(a.subwlevel, b.subwlevel);
 }
 
 #[test]

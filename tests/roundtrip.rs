@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{DEFAULT_FIRST, DEFAULT_LAST, DEFAULT_NPTS, SpcBuilder};
+use common::{DEFAULT_FIRST, DEFAULT_LAST, DEFAULT_NPTS, ExtraFields, SpcBuilder};
 use spc_spectra::{
     Header, Spc, SpcDate, SpcError, SubHeader, TFlags, Technique, XType, YType, ZSpacing,
 };
@@ -165,6 +165,39 @@ fn reads_every_header_field_back() {
     assert_eq!(h.fsource.text(), "NIR probe");
     assert_eq!(h.fcmnt.text(), "synthetic test spectrum");
     assert_eq!(h.ffactor, 1.0);
+}
+
+/// The fields an ordinary export leaves at zero, each given a value of its
+/// own. With zeros in all of them the reader could take one from another's
+/// offset and every other test would still pass.
+#[test]
+fn reads_the_seldom_used_fields_from_their_own_offsets() {
+    let extra = ExtraFields::distinct();
+    let spc = parse(&SpcBuilder::new().spectra(2).extra_fields(extra.clone()));
+    let h = &spc.header;
+
+    assert_eq!(h.fztype.code(), extra.fztype);
+    assert_eq!(h.fpost, extra.fpost);
+    assert_eq!(h.fpeakpt, extra.fpeakpt);
+    assert_eq!(h.fspare, extra.fspare);
+    assert_eq!(h.fmods, extra.fmods);
+    assert_eq!(h.fprocs, extra.fprocs);
+    assert_eq!(h.flevel, extra.flevel);
+    assert_eq!(h.fsampin, extra.fsampin);
+    assert_eq!(h.ffactor, extra.ffactor);
+    assert_eq!(h.fmethod.text().as_bytes(), extra.fmethod.as_slice());
+    assert_eq!(h.fzinc, extra.fzinc);
+    assert_eq!(h.fwinc, extra.fwinc);
+    assert_eq!(h.fwtype.code(), extra.fwtype);
+
+    assert_eq!(spc.subfiles.len(), 2);
+    for sub in &spc.subfiles {
+        let s = &sub.subheader;
+        assert_eq!(s.subflgs.0, extra.subflgs);
+        assert_eq!(s.subnext, extra.subnext);
+        assert_eq!(s.subnois, extra.subnois);
+        assert_eq!(s.subwlevel, extra.subwlevel);
+    }
 }
 
 /// Some instruments put several null-separated entries into `fcmnt`, a field
