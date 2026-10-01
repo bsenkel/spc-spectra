@@ -255,6 +255,10 @@ impl SpcBuilder {
     /// Sets the acquisition date and time (`fdate`).
     ///
     /// Left unset, the file records no date, which is what a zero `fdate` means.
+    ///
+    /// [`Self::build`] refuses a date the packed field cannot hold or a reader
+    /// would not hand back: a month of 13, a day of 40, a year before 1900 or
+    /// after 4095.
     #[must_use]
     pub fn date(mut self, date: SpcDate) -> Self {
         self.date = Some(date);
@@ -349,10 +353,11 @@ impl SpcBuilder {
     /// # Errors
     ///
     /// [`SpcError::NotWritable`] for a spectrum with no points or more points
-    /// than the format's 32 bit count can hold, [`SpcError::MalformedHeader`]
-    /// for a non-finite end point, [`SpcError::ValueNotRepresentable`] for a
-    /// finite y value with no `f32` equivalent, and [`SpcError::FieldTooLong`]
-    /// for a text field that does not fit its slot.
+    /// than the format's 32 bit count can hold, and for a date that would not
+    /// read back as given, [`SpcError::MalformedHeader`] for a non-finite end
+    /// point, [`SpcError::ValueNotRepresentable`] for a finite y value with no
+    /// `f32` equivalent, and [`SpcError::FieldTooLong`] for a text field that
+    /// does not fit its slot.
     pub fn build(self) -> Result<Spc, SpcError> {
         // `series` accepts any list, the empty one included.
         let Some(head) = self.spectra.first() else {
@@ -382,6 +387,21 @@ impl SpcBuilder {
         }
         let fnsub = self.spectra.len() as u32;
 
+        // Packing masks every field to its bit width, so day 40 would be
+        // written as day 8: a valid date, and not the one that was given.
+        let fdate = match self.date {
+            None => 0,
+            Some(date) => {
+                let packed = date.to_packed();
+                if SpcDate::from_packed(packed) != Some(date) {
+                    return Err(SpcError::NotWritable {
+                        detail: "the date is not one that fdate can hold and a reader would hand back",
+                    });
+                }
+                packed
+            }
+        };
+
         let mut ftflgs = TFlags::default();
         if self.talabs {
             ftflgs.0 |= TFlags::TALABS;
@@ -406,7 +426,7 @@ impl SpcBuilder {
             fytype: self.fytype,
             fztype: self.fztype,
             fpost: 0,
-            fdate: self.date.map_or(0, SpcDate::to_packed),
+            fdate,
             date: self.date,
             fres: TextField::new("fres", &self.fres)?,
             fsource: TextField::new("fsource", &self.fsource)?,

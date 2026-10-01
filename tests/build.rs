@@ -477,3 +477,47 @@ fn a_y_value_with_no_32_bit_equivalent_is_refused() {
         other => panic!("1e300 does not fit in an f32, got {other:?}"),
     }
 }
+
+/// Packing masks each field to its bit width, so none of these would fail on
+/// its own: day 40 would be written as day 8, a date that reads back without
+/// complaint and is not the one that was given.
+#[test]
+fn a_date_that_would_not_read_back_is_refused_at_build_time() {
+    let valid = SpcDate {
+        year: 2026,
+        month: 8,
+        day: 26,
+        hour: 9,
+        minute: 15,
+    };
+    let build = |date| {
+        SpcBuilder::new(900.0, 1700.0, vec![0.1, 0.2])
+            .date(date)
+            .build()
+    };
+    assert_eq!(build(valid).unwrap().header.date, Some(valid));
+
+    for date in [
+        SpcDate { day: 40, ..valid },
+        SpcDate { month: 17, ..valid },
+        SpcDate { hour: 40, ..valid },
+        SpcDate {
+            minute: 70,
+            ..valid
+        },
+        SpcDate {
+            year: 6000,
+            ..valid
+        },
+        SpcDate { month: 0, ..valid },
+        SpcDate {
+            year: 1899,
+            ..valid
+        },
+    ] {
+        match build(date) {
+            Err(SpcError::NotWritable { detail }) => assert!(detail.contains("date"), "{detail}"),
+            other => panic!("{date:?} should have been refused, got {other:?}"),
+        }
+    }
+}

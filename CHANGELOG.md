@@ -13,6 +13,14 @@ anyone.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`SpcBuilder::build` refuses a date that would be written as a different
+  one.** Packing a date into `fdate` masks every field to its bit width, so a
+  day of 40 was stored as day 8 and a year of 6000 as 1904, without an error.
+  Such a date is now `SpcError::NotWritable`, as is one a reader would hand
+  back as no date at all: a month of 0, a year before 1900.
+
 ## [0.4.1] - 2026-08-31
 
 ### Fixed

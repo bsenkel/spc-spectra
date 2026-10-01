@@ -83,9 +83,10 @@ pub enum SpcError {
     /// The `Spc` in hand describes something this version cannot serialise.
     ///
     /// Unlike [`Self::Unsupported`], which is about a file that was read, this
-    /// is about a value that would have been written: more than one subfile, an
-    /// empty spectrum, a point count that disagrees with the y values, or an x
-    /// axis that is not the evenly spaced one the format implies.
+    /// is about a value that would have been written: an empty spectrum, a
+    /// point count that disagrees with the y values, an x axis that is not the
+    /// evenly spaced one the format implies, or a date handed to the builder
+    /// that would not read back as given.
     NotWritable {
         /// What made it unwritable.
         detail: &'static str,
